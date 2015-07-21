@@ -1,2 +1,2 @@
-# HaskellBoyAdvance
-GBA emulator written in Haskell
+# HaskellBoy
+GBC emulator written in Haskell
