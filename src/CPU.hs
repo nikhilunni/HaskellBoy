@@ -1,26 +1,13 @@
-module CPU where
+module CPU
+ where
 
-import Data.Word
-import Data.Int
-import Data.Bits
-import Register
-import Data.STRef
-import Control.Monad.ST
-import Control.Applicative
+ import Memory
+ import Monad
 
-data CPUState = 
-       ARM 
-     | THUMB
 
-data CPUMode = 
-       User
-     | FIQ
-     | Supervisor
-     | Abort
-     | IRQ
-     | Undefined
+ 
+ 
 
-type State s = STRef s CPUState
-type Mode s = STRef s CPUMode
-
-cpuInit :: 
+ ld :: Register -> Register -> m ()
+ ld = do
+   

@@ -1,6 +1,4 @@
 module Memory 
-         ( Memory
-         )
  where
        
  import Control.Applicative
@@ -29,6 +27,7 @@ module Memory
 
  data MemVal = MemVal8 Word8
              | MemVal16 Word16
+              deriving (Show)
 
  data Memory s = Memory { memory :: STUArray s Word16 Word8
                         , registers :: STUArray s Word8 Word8
@@ -73,5 +72,3 @@ module Memory
  write mem (MemAddr ptr) (MemVal8 w)            = writeArray (memory mem) ptr w
  write mem SP (MemVal16 w) = writeSTRef (sp mem) w
  write mem PC (MemVal16 w) = writeSTRef (pc mem) w
-
- 
