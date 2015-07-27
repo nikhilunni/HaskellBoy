@@ -6,36 +6,9 @@ module Memory
  import Control.Applicative
  import Control.Monad.ST
  import Data.Word
+ import Data.Array.ST
  import Data.STRef
- import Data.Monoid
-
- type Mem8 s  = (STRef s Word8)
- type Mem16 s = (STRef s Word16)
-
---Use Register for CPU Opcode instructions, have a separate Ref for each register
---Don't combile HL -- Have a ref for H and have a ref for L
- data Memory = Register (STRef s Word8)
-             | Register (STRef s Word8) (STRef s Word8)
-             | Ram (STRef s Word16)
-
- data MemSize = Word8 | Word16
-
- data RegisterSet s = RegisterSet { a  :: {-# UNPACK #-} !(Mem8  s)
-                                  , f  :: {-# UNPACK #-} !(Mem8  s)
-                                  , b  :: {-# UNPACK #-} !(Mem8  s)
-                                  , c  :: {-# UNPACK #-} !(Mem8  s)
-                                  , d  :: {-# UNPACK #-} !(Mem8  s)
-                                  , e  :: {-# UNPACK #-} !(Mem8  s)
-                                  , h  :: {-# UNPACK #-} !(Mem8  s)
-                                  , l  :: {-# UNPACK #-} !(Mem8  s)
-                                  , af :: {-# UNPACK #-} !(Mem16 s)
-                                  , bc :: {-# UNPACK #-} !(Mem16 s)
-                                  , de :: {-# UNPACK #-} !(Mem16 s)
-                                  , hl :: {-# UNPACK #-} !(Mem16 s)
-                                  , sp :: {-# UNPACK #-} !(Mem16 s)
-                                  , pc :: {-# UNPACK #-} !(Mem16 s)
-                                  }
-
+ import Data.Bits
 
  data Register =   A
                  | F
@@ -45,43 +18,60 @@ module Memory
                  | E
                  | H
                  | L
-                 | AF
-                 | BC
-                 | DE
-                 | HL
-                 | SP
-                 | PC
+                 deriving (Show, Enum)
+
+ data Address = OneRegister Register
+              | TwoRegister {registerA :: Register, registerB :: Register} --Enforce pairings? (BC, DE, HL)
+              | MemAddr Word16
+              | SP
+              | PC
+              deriving (Show)
+
+ data MemVal = MemVal8 Word8
+             | MemVal16 Word16
+
+ data Memory s = Memory { memory :: STUArray s Word16 Word8
+                        , registers :: STUArray s Word8 Word8
+                        , sp :: STRef s Word16
+                        , pc :: STRef s Word16
+                        }                          
 
 
  new :: ST s (Memory s)
- new = runST $ do
-   
+ new = do
+   memory' <- newArray_ (0x0000, 0xFFFF)
+   registers' <- newArray (0x0, 0x8) 0 --Fix this...
+   sp' <- newSTRef 0x0000
+   pc' <- newSTRef 0x0000
+   return Memory { memory = memory'
+                 , registers = registers'
+                 , sp = sp'
+                 , pc = pc'
+                 }
+
+ regNum = fromIntegral . fromEnum
        
+ read :: Memory s -> Address -> ST s MemVal
+ read mem (OneRegister reg)       = readArray (registers mem) (regNum reg) >>= \n -> return $ MemVal8 n
+ read mem (TwoRegister regA regB) =
+   do
+   a <- readArray (registers mem) (regNum regA)
+   b <- readArray (registers mem) (regNum regB)
+   return $ MemVal16 $ fromIntegral $ (a `shiftL` 8) + (b) 
+ read mem (MemAddr ptr)           = readArray (memory mem) ptr >>= \n -> return $ MemVal8 n
+ read mem SP                      = readSTRef (sp mem) >>= \n -> return $ MemVal16 n
+ read mem PC                      = readSTRef (pc mem) >>= \n -> return $ MemVal16 n
+
+
+
+ write :: Memory s -> Address -> MemVal -> ST s ()
+ write mem (OneRegister reg) (MemVal8 w)        = writeArray (registers mem) (regNum reg) w
+ write mem (TwoRegister regA regB) (MemVal16 w) =
+   do
+   writeArray (registers mem) (regNum regA) $ fromIntegral (w `shiftR` 8)
+   writeArray (registers mem) (regNum regB) $ fromIntegral (w .&. 0xFF)
+ write mem (MemAddr ptr) (MemVal8 w)            = writeArray (memory mem) ptr w
+ write mem SP (MemVal16 w) = writeSTRef (sp mem) w
+ write mem PC (MemVal16 w) = writeSTRef (pc mem) w
 
  
- getRegisterRef :: Register -> RegisterSet s -> STRef s Word8
- getRegisterRef reg set = case reg of
-     A  -> a $ set
-     F  -> f $ set
-     B  -> b $ set
-     C  -> c $ set
-     D  -> d $ set
-     E  -> e $ set
-     H  -> h $ set
-     L  -> l $ set
-     AF -> af $ set
-     BC -> bc $ set
-     DE -> de $ set
-     HL -> hl $ set
-     SP -> sp $ set
-     PC -> pc $ set
- 
-
- initRegisters :: ST s (RegisterSet s)
- initRegisters = let k8 = newSTRef  (0 :: Word8)
-                     k16 = newSTRef (0 :: Word16)
-                 in RegisterSet
-    <$> k8  <*> k8  <*> k8  <*> k8  <*> k8
-    <*> k8  <*> k8  <*> k8  <*> k16 <*> k16
-    <*> k16 <*> k16 <*> k16 <*> k16
-
