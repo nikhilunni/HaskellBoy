@@ -20,14 +20,10 @@ module CPU
     | LDHLr Register                  --Load register into (HL)
     | LDBCr Register                  --Load register into (BC)
     | LDDEr Register                  --Load register into (DE)
-    | LDHLn Word8                     --Load immediate into (HL)
+    | LDHLn Word16                    --Load immediate into (HL)
     | LDnnr Word16 Register           --Load register into (immediate)
     | LDrr' Register Register         --Load (FF00 + register) into register
     | LDrr'' Register Register        --Load register into (FF00 + register)
-    | LDDrHL Register                 --Load (HL) into register, decrement HL
-    | LDDHLr Register                 --Load register into (HL), decrement HL
-    | LDIrHL Register                 --Load (HL) into register, increment HL
-    | LDIHLr Register                 --Load register into (HL), increment HL
     | LDnr Word8 Register             --Load register into (FF00 + immediate)
     | LDrn' Register Word8            --Load (FF00 + immediate) into register
  --16-bit loads
@@ -123,18 +119,65 @@ module CPU
     | RETcc Word16                    --RET if cc conditions are true (see specs)
     | RETI                            --RET, then enable interrupts
 
-  
-  
+ 
+--Helper Functions  
  ld :: Emulator m => Register -> Either Register Word8 -> m ()
  ld reg1 (Left reg2) = do
    a <- load $ OneRegister reg2
    store (OneRegister reg1) a
  ld reg1 (Right word) = do
    store (OneRegister reg1) (MemVal8 word)
-
+------------------
  
--- executeInstruction :: Emulator m => Instruction -> m ()
--- executeInstruction instr = case instr of
-   
-            
-   
+ executeInstruction :: Emulator m => Instruction -> m ()
+ executeInstruction instr = case instr of
+--8-bit loads   
+   LDrn reg imm -> ld reg (Right imm)
+   LDrr reg1 reg2 -> ld reg1 (Left reg2)
+   LDrHL reg -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     mem <- load (MemAddr hl)
+     store (OneRegister reg) mem
+   LDrBC reg -> do
+     MemVal16 bc <- load (TwoRegister B C)
+     mem <- load (MemAddr bc)
+     store (OneRegister reg) mem
+   LDrDE reg -> do
+     MemVal16 de <- load (TwoRegister D E)
+     mem <- load (MemAddr de)
+     store (OneRegister reg) mem
+   LDrnn reg imm16 -> do
+     m <- load (MemAddr imm16)
+     store (OneRegister reg) m
+   LDHLr reg -> do
+     m <- load (OneRegister reg)
+     MemVal16 mem <- load (TwoRegister H L)
+     store (MemAddr mem) m
+   LDBCr reg -> do
+     m <- load (OneRegister reg)
+     MemVal16 mem <- load (TwoRegister B C)
+     store (MemAddr mem) m
+   LDDEr reg -> do
+     m <- load (OneRegister reg)
+     MemVal16 mem <- load (TwoRegister D E)
+     store (MemAddr mem) m
+   LDHLn imm -> do
+     MemVal16 mem <- load (TwoRegister H L)
+     store (MemAddr mem) (MemVal16 imm)
+   LDnnr imm16 reg -> do
+     m <- load (OneRegister reg)
+     store (MemAddr imm16) m
+   LDrr' reg1 reg2 -> do
+     MemVal8 loc <- load (OneRegister reg2)
+     mem <- load $ MemAddr $ (0xFF00) + (fromIntegral loc)
+     store (OneRegister reg1) mem
+   LDrr'' reg1 reg2 -> do
+     val <- load (OneRegister reg2)
+     MemVal8 mem <- load (OneRegister reg1)
+     store (MemAddr $ (0xFF00) + (fromIntegral mem)) val
+   LDnr imm reg -> do
+     val <- load (OneRegister reg)
+     store (MemAddr $ 0xFF00 + (fromIntegral imm)) val
+   LDrn' reg imm -> do
+     val <- load (MemAddr $ 0xFF00 + (fromIntegral imm))
+     store (OneRegister reg) val
