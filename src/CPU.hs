@@ -4,7 +4,9 @@ module CPU
 
  import Data.Word
  import Data.Either
- 
+ import Data.Bits
+ import Data.Bool
+
  import Memory
  import Monad
 
@@ -27,11 +29,11 @@ module CPU
     | LDnr Word8 Register             --Load register into (FF00 + immediate)
     | LDrn' Register Word8            --Load (FF00 + immediate) into register
  --16-bit loads
-    | LDrrnn Register Register Word16 --Load immediate into (register,register)
+    | LDrrnn Register Register Word16 --Load immediate into [register,register]
     | LDSPHL                          --Load HL into SP
     | LDHLSPn Word8                   --Load SP+n into (HL)
     | LDnnSP Word16                   --Load SP into (nn)
-    | PUSHrr Register Register        --Push (Register,Register) onto Stack, decrement SP twice
+    | PUSHrr Register Register        --Push [register,register] onto Stack, decrement SP twice
     | POPrr Register Register         --Pop two bytes off stack into (Register,Register), increment SP twice
  --8-bit ALU
     | ADDr Register                   --Add register to A
@@ -127,6 +129,38 @@ module CPU
    store (OneRegister reg1) a
  ld reg1 (Right word) = do
    store (OneRegister reg1) (MemVal8 word)
+
+ data Flag = FlagZ | FlagN | FlagH | FlagC
+ data Bit = Zero | One deriving Enum
+
+ class IsBit a where
+   toBit :: a -> Bit
+
+ instance IsBit Integer where
+   toBit num = case num of
+     0 -> Zero
+     _ -> One
+ instance IsBit Bool where
+   toBit False = Zero
+   toBit True = One
+ instance IsBit Bit where
+   toBit = id
+ 
+ updateFlag :: Word8 -> Flag -> Bit -> Word8
+ updateFlag fReg flag bit = case flag of
+   FlagZ -> fReg `setBit` 7
+   FlagN -> fReg `setBit` 6
+   FlagH -> fReg `setBit` 5
+   FlagC -> fReg `setBit` 4
+
+
+ updateFlags :: (Emulator m) => [(Flag,Bit)] -> m ()
+ updateFlags xs = do
+   MemVal8 fReg <- load (OneRegister F)
+   let newfReg = foldl (\acc (flag,bit) -> updateFlag acc flag (toBit bit)) fReg xs
+   store (OneRegister F) (MemVal8 newfReg)
+
+ intify = toInteger.fromIntegral
 ------------------
  
  executeInstruction :: Emulator m => Instruction -> m ()
@@ -181,3 +215,35 @@ module CPU
    LDrn' reg imm -> do
      val <- load (MemAddr $ 0xFF00 + (fromIntegral imm))
      store (OneRegister reg) val
+--16-bit loads
+   LDrrnn reg1 reg2 imm16 -> do
+     store (TwoRegister reg1 reg2) (MemVal16 imm16 )
+   LDSPHL -> do
+     val <- load (TwoRegister H L)
+     store SP val
+   LDHLSPn imm -> do
+     MemVal16 val <- load SP
+     store (TwoRegister H L) $ MemVal16 $ val + (fromIntegral imm)
+   LDnnSP imm16 -> store SP (MemVal16 imm16)
+   PUSHrr reg1 reg2 -> do --left-most byte => SP-1, right-most byte => SP-2
+     MemVal16 sp <- load SP
+     hi <- load (OneRegister reg1)
+     lo <- load (OneRegister reg2)
+     store (MemAddr $ sp-1) hi
+     store (MemAddr $ sp-2) lo
+     store (SP) $ MemVal16 (sp-2)
+   POPrr reg1 reg2 -> do --SP => right, SP+1 => left
+     MemVal16 sp <- load SP
+     MemVal8 right <- load (MemAddr $ sp)
+     MemVal8 left <- load (MemAddr $ sp+1)
+     store (TwoRegister reg1 reg2) $ MemVal16 $ (shiftL . fromIntegral) left 8 .|. fromIntegral right
+     store (SP) $ MemVal16 (sp+2)
+--8-bit ALU
+   ADDr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     MemVal8 aVal <- load (OneRegister A)
+     let sum = regVal+aVal
+     store (OneRegister A) (MemVal8 sum)
+     updateFlags [(FlagZ, toBit $ intify $ regVal+aVal),
+                  (FlagN, Zero),
+                  (FlagH, toBit $ sum .&. 0x0F < aVal .&. 0x0F)]
