@@ -140,24 +140,36 @@ module CPU
    toBit num = case num of
      0 -> Zero
      _ -> One
+ instance IsBit Word8 where
+   toBit num = case num of
+     0 -> Zero
+     _ -> One
  instance IsBit Bool where
    toBit False = Zero
    toBit True = One
  instance IsBit Bit where
    toBit = id
- 
- updateFlag :: Word8 -> Flag -> Bit -> Word8
- updateFlag fReg flag bit = case flag of
-   FlagZ -> fReg `setBit` 7
-   FlagN -> fReg `setBit` 6
-   FlagH -> fReg `setBit` 5
-   FlagC -> fReg `setBit` 4
+
+ toBitNum :: (IsBit b) => b -> Int
+ toBitNum bit = fromEnum.toBit $ bit
+
+ set :: (Bits a, IsBit b) => a -> Int -> b -> a
+ set num idx bit = case (toBitNum bit) of
+   0 -> num `clearBit` idx
+   1 -> num `setBit` idx
+
+ updateFlag :: (IsBit b) => Flag -> b -> Word8 -> Word8
+ updateFlag flag bit fReg = case flag of
+   FlagZ -> set fReg 7 bit
+   FlagN -> set fReg 6 bit
+   FlagH -> set fReg 5 bit
+   FlagC -> set fReg 4 bit
 
 
  updateFlags :: (Emulator m) => [(Flag,Bit)] -> m ()
  updateFlags xs = do
    MemVal8 fReg <- load (OneRegister F)
-   let newfReg = foldl (\acc (flag,bit) -> updateFlag acc flag (toBit bit)) fReg xs
+   let newfReg = foldl (\acc (flag,bit) -> updateFlag flag (toBit bit) acc) fReg xs
    store (OneRegister F) (MemVal8 newfReg)
 
  intify = toInteger.fromIntegral
@@ -244,6 +256,10 @@ module CPU
      MemVal8 aVal <- load (OneRegister A)
      let sum = regVal+aVal
      store (OneRegister A) (MemVal8 sum)
+     MemVal8 regF <- load (OneRegister F)
      updateFlags [(FlagZ, toBit $ intify $ regVal+aVal),
                   (FlagN, Zero),
                   (FlagH, toBit $ sum .&. 0x0F < aVal .&. 0x0F)]
+   
+     
+     
