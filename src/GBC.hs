@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-} --Unsafe!
+
 module GBC
  where
 
@@ -9,6 +10,7 @@ module GBC
 
  import Memory
  import Monad
+ import Cartridge
 
  newtype GBC a = GBC (ReaderT (Memory RealWorld) IO a)
                  deriving (Functor, Applicative, Monad, MonadIO)
@@ -35,6 +37,9 @@ module GBC
    load (OneRegister A)
 
  main :: IO ()
- main = runGBC $ do
-           v <- test
-           liftIO $ putStrLn $ show v
+ main = do
+   cart <- readCartridge "CPU.hs"
+   runGBC $ do
+     storeCartridge cart
+     MemVal8 thing <- load (MemAddr 0x0000)
+     liftIO $ putStrLn $ show $ thing

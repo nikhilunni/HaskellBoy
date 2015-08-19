@@ -40,7 +40,7 @@ module Memory
  new = do
    memory' <- newArray_ (0x0000, 0xFFFF)
    registers' <- newArray (0x0, 0x8) 0 --Fix this...
-   sp' <- newSTRef 0x0000
+   sp' <- newSTRef 0xFFFE
    pc' <- newSTRef 0x0000
    return Memory { memory = memory'
                  , registers = registers'
@@ -71,5 +71,4 @@ module Memory
    writeArray (registers mem) (regNum regB) $ fromIntegral (w .&. 0xFF)
  write mem (MemAddr ptr) (MemVal8 w)            = writeArray (memory mem) ptr w
  write mem SP (MemVal16 w) = writeSTRef (sp mem) w
- write mem PC (MemVal16 w) = writeSTRef (pc mem) w
-
+-- write mem PC (MemVal16 w) = writeSTRef (pc mem) w

@@ -1,5 +1,5 @@
 module CPU
-       (--execute
+       (  Instruction
        ) where
 
  import Data.Word
@@ -9,6 +9,13 @@ module CPU
 
  import Memory
  import Monad
+
+
+ loadNextInstruction :: Emulator m => m Instruction
+ loadNextInstruction = do
+   
+   
+   
 
  data Instruction =   
  --See : http://marc.rawer.de/Gameboy/Docs/GBCPUman.pdf
@@ -261,5 +268,4 @@ module CPU
                   (FlagN, Zero),
                   (FlagH, toBit $ sum .&. 0x0F < aVal .&. 0x0F)]
    
-     
      
