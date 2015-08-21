@@ -248,15 +248,15 @@ module CPU
      MemVal16 sp <- load SP
      hi <- load (OneRegister reg1)
      lo <- load (OneRegister reg2)
-     store (MemAddr $ sp-1) hi
-     store (MemAddr $ sp-2) lo
+     store (MemAddr $ (sp-1) .&. 0xFFFF) hi
+     store (MemAddr $ (sp-2) .&. 0xFFFF) lo
      store (SP) $ MemVal16 (sp-2)
    POPrr reg1 reg2 -> do --SP => right, SP+1 => left
      MemVal16 sp <- load SP
      MemVal8 right <- load (MemAddr $ sp)
-     MemVal8 left <- load (MemAddr $ sp+1)
+     MemVal8 left <- load (MemAddr $ (sp+1) .&. 0xFFFF)
      store (TwoRegister reg1 reg2) $ MemVal16 $ (shiftL . fromIntegral) left 8 .|. fromIntegral right
-     store (SP) $ MemVal16 (sp+2)
+     store (SP) $ MemVal16 $ (sp+2) & .&. 0xFFFF
 --8-bit ALU
    ADDr reg -> do
      MemVal8 regVal <- load (OneRegister reg)
