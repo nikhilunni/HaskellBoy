@@ -11,13 +11,7 @@ module CPU
  import Monad
 
 
- loadNextInstruction :: Emulator m => m Instruction
- loadNextInstruction = do
-   
-   
-   
-
- data Instruction =   
+ data Instruction =
  --See : http://marc.rawer.de/Gameboy/Docs/GBCPUman.pdf
  --8-bit loads
       LDrn Register Word8             --Load immediate into register
@@ -46,15 +40,15 @@ module CPU
     | ADDr Register                   --Add register to A
     | ADDn Word8                      --Add immediate to A
     | ADDHL                           --Add (HL) to A
-    | ADCr Register                   --Add (register+carry flag) to A
-    | ADCn Word8                      --Add (immediate+carry flag) to A
-    | ADCHL                           --Add ((HL)+carry flag) to A
+    | ADCr Register                   --Add register+carry flag to A
+    | ADCn Word8                      --Add immediate+carry flag to A
+    | ADCHL                           --Add (HL)+carry flag to A
     | SUBr Register                   --Sub register from A
     | SUBn Word8                      --Sub immediate from A
     | SUBHL                           --Sub (HL) from A
-    | SBCr Register                   --Sub (register+carry flag) from A 
-    | SBCn Word8                      --Sub (immediate+carry flag) from A 
-    | SBCHL                           --Sub ((HL)+carry flag) from A 
+    | SBCr Register                   --Sub register+carry flag from A 
+    | SBCn Word8                      --Sub immediate+carry flag from A 
+    | SBCHL                           --Sub (HL)+carry flag from A 
     | ANDr Register                   --AND register with A
     | ANDn Word8                      --AND immediate with A
     | ANDHL                           --AND (HL) with A
@@ -116,8 +110,8 @@ module CPU
     | JPnn Word16                     --Jump to address nn
     | JPccnn Word16 Word16            --Jump to nn if cc conditions are true (see specs)
     | JPHL                            --Jump to address (HL)
-    | JPn Word8                       --Jump to (current address + n)
-    | JRccn Word8 Word16              --Jump to (current address + n) if cc conditions are true (see specs)
+    | JPn Word8                       --Jump to current address + n
+    | JRccn Word8 Word16              --Jump to current address + n if cc conditions are true (see specs)
  --Calls
     | CALLnn Word16                   --Push address of next instruction onto stack, and jump to address nn
     | CALLccnn Word16 Word16          --Call address nn if cc conditions are true (see specs)
@@ -137,8 +131,15 @@ module CPU
  ld reg1 (Right word) = do
    store (OneRegister reg1) (MemVal8 word)
 
- data Flag = FlagZ | FlagN | FlagH | FlagC
- data Bit = Zero | One deriving Enum
+ data Flag = FlagZ | FlagN | FlagH | FlagC deriving Show
+ data Bit = Zero | One deriving (Enum, Show)
+
+ instance Num Bit where
+   fromInteger = toBit
+   (+) a b = toBit $ toInteger $ (fromEnum a) + (fromEnum b)
+   (*) a b = toBit $ toInteger $ (fromEnum a) * (fromEnum b)
+   abs = toBit . toInteger . abs . fromEnum
+   signum = toBit . toInteger . signum . fromEnum
 
  class IsBit a where
    toBit :: a -> Bit
@@ -147,23 +148,23 @@ module CPU
    toBit num = case num of
      0 -> Zero
      _ -> One
+     
  instance IsBit Word8 where
    toBit num = case num of
      0 -> Zero
      _ -> One
+     
  instance IsBit Bool where
    toBit False = Zero
    toBit True = One
+
  instance IsBit Bit where
    toBit = id
 
- toBitNum :: (IsBit b) => b -> Int
- toBitNum bit = fromEnum.toBit $ bit
-
  set :: (Bits a, IsBit b) => a -> Int -> b -> a
- set num idx bit = case (toBitNum bit) of
-   0 -> num `clearBit` idx
-   1 -> num `setBit` idx
+ set num idx bit = case (toBit bit) of
+   Zero -> num `clearBit` idx
+   One  -> num `setBit`   idx
 
  updateFlag :: (IsBit b) => Flag -> b -> Word8 -> Word8
  updateFlag flag bit fReg = case flag of
@@ -172,14 +173,102 @@ module CPU
    FlagH -> set fReg 5 bit
    FlagC -> set fReg 4 bit
 
-
  updateFlags :: (Emulator m) => [(Flag,Bit)] -> m ()
  updateFlags xs = do
    MemVal8 fReg <- load (OneRegister F)
    let newfReg = foldl (\acc (flag,bit) -> updateFlag flag (toBit bit) acc) fReg xs
    store (OneRegister F) (MemVal8 newfReg)
 
+ getBit :: (Bits a, Num a) => a -> Int -> Bit
+ getBit num i = toBit $ 0 /= ((bit i) .&. num) `shiftR` i
+
+ getFlagBit :: Emulator m => Flag -> m Bit
+ getFlagBit flag = do
+   MemVal8 fReg <- load (OneRegister F)
+   case flag of
+     FlagZ -> return $ getBit fReg 7
+     FlagN -> return $ getBit fReg 6
+     FlagH -> return $ getBit fReg 5
+     FlagC -> return $ getBit fReg 4
+
+
+ class ALUInput a where
+   loadInput :: Emulator m => a -> m Word8
+
+ instance ALUInput Register where
+   loadInput reg = do
+     MemVal8 regVal <- load (OneRegister reg)
+     return regVal
+
+
+ instance ALUInput Word8 where
+   loadInput = return
+
+
+ data FlagInput = ImmFlag Word8 | RegFlag Register | HLFlag
+ instance ALUInput FlagInput where
+   loadInput (ImmFlag imm) = do
+     carryBit <- getFlagBit FlagC
+     return $ (fromIntegral.fromEnum $ carryBit) + imm
+   loadInput (RegFlag reg) = do
+     MemVal8 regVal <- load (OneRegister reg)
+     carryBit <- getFlagBit FlagC
+     return $ (fromIntegral.fromEnum $ carryBit) + regVal
+   loadInput HLFlag = do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     carryBit <- getFlagBit FlagC
+     return $ (fromIntegral.fromEnum $ carryBit) + mem
+
+
+ data HL = HL --Yikes...
+ instance ALUInput HL where
+   loadInput _ = do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     return mem
+
+
+ data ALUOp = PLUS|MINUS|AND|OR|XOR
+
+ executeALUInstr :: (Emulator m, ALUInput a) => a -> ALUOp -> m ()
+ executeALUInstr a optype = do
+   input <- loadInput a
+   MemVal8 aVal <- load (OneRegister A)
+   let op = case optype of
+         PLUS  -> (+)
+         MINUS -> (-)
+         AND   -> (.&.)
+         OR    -> (.|.)
+         XOR   -> (.^.)
+
+   let sum = op aVal input
+   store (OneRegister A) (MemVal8 sum)
+   case optype of
+     (PLUS)  -> updateFlags [(FlagZ, toBit $ sum == 0),
+                             (FlagN, Zero),
+                             (FlagH, toBit $ sum .&. 0x0F < aVal .&. 0x0F),
+                             (FlagC, toBit $ sum < aVal)]
+     (MINUS) -> updateFlags [(FlagZ, toBit $ sum == 0),
+                             (FlagN, One),
+                             (FlagH, toBit $ sum .&. 0x0F > aVal .&. 0x0F),
+                             (FlagC, toBit $ sum > aVal)]
+     (AND)   -> updateFlags [(FlagZ, toBit $ sum == 0),
+                             (FlagN, Zero),
+                             (FlagH, One),
+                             (FlagC, Zero)]
+     (OR)    -> updateFlags [(FlagZ, toBit $ sum == 0),
+                             (FlagN, Zero),
+                             (FlagH, Zero),
+                             (FlagC, Zero)]
+     (XOR)   -> updateFlags [(FlagZ, toBit $ sum == 0),
+                             (FlagN, Zero),
+                             (FlagH, Zero),
+                             (FlagC, Zero)]
+   
+
  intify = toInteger.fromIntegral
+ (.^.) = xor
 ------------------
  
  executeInstruction :: Emulator m => Instruction -> m ()
@@ -256,16 +345,83 @@ module CPU
      MemVal8 right <- load (MemAddr $ sp)
      MemVal8 left <- load (MemAddr $ (sp+1) .&. 0xFFFF)
      store (TwoRegister reg1 reg2) $ MemVal16 $ (shiftL . fromIntegral) left 8 .|. fromIntegral right
-     store (SP) $ MemVal16 $ (sp+2) & .&. 0xFFFF
+     store (SP) $ MemVal16 $ (sp+2) .&. 0xFFFF
 --8-bit ALU
-   ADDr reg -> do
-     MemVal8 regVal <- load (OneRegister reg)
+   ADDr reg -> executeALUInstr reg PLUS
+   ADDn imm -> executeALUInstr imm PLUS
+   ADDHL    -> executeALUInstr HL PLUS
+   ADCr reg -> executeALUInstr (RegFlag reg) PLUS
+   ADCn imm -> executeALUInstr (ImmFlag imm) PLUS
+   ADCHL    -> executeALUInstr HLFlag PLUS
+   SUBr reg -> executeALUInstr reg MINUS
+   SUBn imm -> executeALUInstr imm MINUS
+   SUBHL    -> executeALUInstr HL MINUS
+   SBCr reg -> executeALUInstr (RegFlag reg) MINUS
+   SBCn imm -> executeALUInstr (ImmFlag imm) MINUS
+   SBCHL    -> executeALUInstr HL MINUS
+   ANDr reg -> executeALUInstr reg AND
+   ANDn imm -> executeALUInstr imm AND
+   ANDHL    -> executeALUInstr HL AND
+   ORr reg  -> executeALUInstr reg OR
+   ORn imm  -> executeALUInstr imm OR
+   ORHL     -> executeALUInstr HL OR
+   XORr reg -> executeALUInstr reg XOR
+   XORn imm -> executeALUInstr imm XOR
+   XORHL    -> executeALUInstr HL XOR
+   CPr reg -> do
      MemVal8 aVal <- load (OneRegister A)
-     let sum = regVal+aVal
-     store (OneRegister A) (MemVal8 sum)
-     MemVal8 regF <- load (OneRegister F)
-     updateFlags [(FlagZ, toBit $ intify $ regVal+aVal),
+     MemVal8 regVal <- load (OneRegister reg)
+     let diff = aVal - regVal
+     updateFlags [(FlagZ, toBit $ aVal == regVal),
+                  (FlagN, One),
+                  (FlagH, toBit $ diff .&. 0x0F > aVal .&. 0x0F),
+                  (FlagC, toBit $ diff > aVal)]
+   CPn imm -> do
+     MemVal8 aVal <- load (OneRegister A)
+     let diff = aVal - imm
+     updateFlags [(FlagZ, toBit $ diff == 0),
+                  (FlagN, One),
+                  (FlagH, toBit $ diff .&. 0x0F > aVal .&. 0x0F),
+                  (FlagC, toBit $ diff > aVal)]
+   CPHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     MemVal8 aVal <- load (OneRegister A)
+     let diff = aVal - mem
+     updateFlags [(FlagZ, toBit $ diff == 0),
+                  (FlagN, One),
+                  (FlagH, toBit $ diff .&. 0x0F > aVal .&. 0x0F),
+                  (FlagC, toBit $ diff > aVal)]
+   INCr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     let sum = regVal + 1
+     store (OneRegister reg) (MemVal8 sum)
+     updateFlags [(FlagZ, toBit $ sum == 0),
                   (FlagN, Zero),
-                  (FlagH, toBit $ sum .&. 0x0F < aVal .&. 0x0F)]
-   
+                  (FlagH, toBit $ sum .&. 0x0F < regVal .&. 0x0F)]
+   INCHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     let sum = mem + 1
+     store (MemAddr hl) (MemVal8 sum)
+     updateFlags [(FlagZ, toBit $ sum == 0),
+                  (FlagN, Zero),
+                  (FlagH, toBit $ sum .&. 0x0F < mem .&. 0x0F)]
+     
+   DECr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     let diff = regVal - 1
+     store (OneRegister reg) (MemVal8 diff)
+     updateFlags [(FlagZ, toBit $ diff == 0),
+                  (FlagN, One),
+                  (FlagH, toBit $ diff .&. 0x0F > regVal .&. 0x0F)]
+   DECHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     let diff = mem - 1
+     store (MemAddr hl) (MemVal8 diff)
+     updateFlags [(FlagZ, toBit $ diff == 0),
+                  (FlagN, Zero),
+                  (FlagH, toBit $ diff .&. 0x0F > mem .&. 0x0F)]
+     
      
