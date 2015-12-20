@@ -102,7 +102,7 @@ module CPU
     | SRLr Register                   --Shift register right into carry. MSB set to 0
     | SRLHL                           --Shift (HL) right into carry. MSB set to 0
  --Bit Opcodes
-    | BITnr Word8                     --Test immediate in register
+    | BITnr Register Word8            --Test immediate in register
     | BITnHL Word8                    --Test immediate in (HL)
     | SETnr Register Word8            --Set bit b in register
     | SETnHL Word8                    --Set bit b in (HL)
@@ -637,4 +637,36 @@ module CPU
      updateFlags[(FlagZ, toBit $ out == 0),
                  (FlagN, Zero),
                  (FlagH, Zero),
-                 (FlagC, getBit mem 0)]     
+                 (FlagC, getBit mem 0)]
+   BITnr reg imm -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     updateFlags[(FlagZ, toBit $ testBit regVal (fromIntegral imm) ),
+                 (FlagN, Zero),
+                 (FlagH, One)]
+
+   BITnHL imm -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     updateFlags[(FlagZ, toBit $ testBit mem (fromIntegral imm) ),
+                 (FlagN, Zero),
+                 (FlagH, One)]
+
+   SETnr reg imm -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     store (OneRegister reg) (MemVal8 $ regVal `setBit` (fromIntegral imm) )
+
+   SETnHL imm -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     store (MemAddr hl) (MemVal8 $ mem `setBit` (fromIntegral imm) )
+
+   RESnr reg imm -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     store (OneRegister reg) (MemVal8 $ regVal `clearBit` (fromIntegral imm) )
+
+   RESnHL imm -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     store (MemAddr hl) (MemVal8 $ mem `clearBit` (fromIntegral imm) )
+   
+   
