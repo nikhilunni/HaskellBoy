@@ -110,10 +110,10 @@ module CPU
     | RESnHL Word8                    --Reset bit b in (HL)
  --Jumps
     | JPnn Word16                     --Jump to address nn
-    | JPccnn Word16 Word16            --Jump to nn if cc conditions are true (see specs)
+    | JPccnn FlagCondition Word16     --Jump to nn if cc conditions are true (see specs)
     | JPHL                            --Jump to address (HL)
-    | JPn Word8                       --Jump to current address + n
-    | JRccn Word8 Word16              --Jump to current address + n if cc conditions are true (see specs)
+    | JRn Word8                       --Jump to current address + n
+    | JRccn FlagCondition Word8       --Jump to current address + n if cc conditions are true (see specs)
  --Calls
     | CALLnn Word16                   --Push address of next instruction onto stack, and jump to address nn
     | CALLccnn Word16 Word16          --Call address nn if cc conditions are true (see specs)
@@ -139,6 +139,31 @@ module CPU
  complementBit :: Bit -> Bit
  complementBit One  = Zero
  complementBit Zero = One
+
+ data FlagCondition = CondNZ | CondZ | CondNC | CondC deriving Show
+ 
+ testFlagCondition :: Emulator m => FlagCondition -> m Bool
+ testFlagCondition CondNZ = do
+   flagZ <- getFlagBit FlagZ
+   return $ case flagZ of
+     One -> False
+     Zero -> True
+ testFlagCondition CondZ = do
+   flagZ <- getFlagBit FlagZ
+   return $ case flagZ of
+     One -> True
+     Zero -> False
+ testFlagCondition CondNC = do
+   flagC <- getFlagBit FlagC
+   return $ case flagC of
+     One -> False
+     Zero -> True
+ testFlagCondition CondC = do
+   flagC <- getFlagBit FlagC
+   return $ case flagC of
+     One -> True
+     Zero -> False
+ 
 
  instance Num Bit where
    fromInteger = toBit
@@ -669,4 +694,24 @@ module CPU
      MemVal8 mem <- load (MemAddr hl)
      store (MemAddr hl) (MemVal8 $ mem `clearBit` (fromIntegral imm) )
    
+   JPnn imm -> do
+     store SP (MemVal16 imm)
+
+   JPccnn cond imm -> do
+     toJump <- testFlagCondition cond
+     if toJump then store SP (MemVal16 imm) else return ()
    
+   JPHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     store SP (MemVal16 $ fromIntegral mem)
+
+   JRn imm -> do
+     MemVal16 currAddr <- load SP
+     store SP (MemVal16 $ currAddr + fromIntegral imm)
+     
+   JRccn cond imm -> do
+     MemVal16 currAddr <- load SP
+     toJump <- testFlagCondition cond
+     if toJump then store SP (MemVal16 $ currAddr + fromIntegral imm) else return ()
+
