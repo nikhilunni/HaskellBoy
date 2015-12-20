@@ -5,7 +5,8 @@ module CPU
  import Data.Word
  import Data.Either
  import Data.Bits ( (.&.) , (.|.), clearBit, setBit, bit, xor,
-                    shiftL, shiftR, Bits, complement) 
+                    shiftL, shiftR, rotateR, rotateL, Bits, complement,
+                    testBit) 
  import Data.Bool
 
  import Memory
@@ -506,7 +507,134 @@ module CPU
    STOP -> return ()
    DI   -> return () --TODO
    EI   -> return () --TODO
-   
+
+   RLCr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     let out = regVal `rotateL` 1
+     store (OneRegister reg) (MemVal8 out)     
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 7)]
+
+   RLCHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     let out = mem `rotateL` 1
+     store (MemAddr hl) (MemVal8 out)     
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit mem 7)]
      
-     
-     
+   RLr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     carryBit <- getFlagBit FlagC
+     let out = (regVal `rotateL` 1) + (fromIntegral $ fromEnum carryBit)
+     store (OneRegister reg) (MemVal8 out)
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 7)]
+   RLHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     carryBit <- getFlagBit FlagC
+     let out = (mem `rotateL` 1) + (fromIntegral $ fromEnum carryBit)
+     store (MemAddr hl) (MemVal8 out)
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit mem 7)]
+
+   RRCr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     let out = regVal `rotateR` 1
+     store (OneRegister reg) (MemVal8 out)     
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 0)]
+   RRCHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     let out = mem `rotateR` 1
+     store (MemAddr hl) (MemVal8 out)     
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit mem 0)]
+
+   RRr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     carryBit <- getFlagBit FlagC
+     let out = (regVal `rotateR` 1) + (fromIntegral $ fromEnum carryBit)
+     store (OneRegister reg) (MemVal8 out)
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 0)]
+
+   RRHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     carryBit <- getFlagBit FlagC
+     let out = (mem `rotateR` 1) + (fromIntegral $ fromEnum carryBit)
+     store (MemAddr hl) (MemVal8 out)
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit mem 0)]
+
+   SLAr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     let out = regVal `shiftL` 1
+     store (OneRegister reg) (MemVal8 out)
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 7)]
+   SLAHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     let out = mem `shiftL` 1
+     store (MemAddr hl) (MemVal8 out)     
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit mem 7)]     
+   SRAr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     carryBit <- getFlagBit FlagC
+     let out = (regVal `shiftR` 1) .|. (if testBit regVal 7 then (bit 7) else 0) --Keep MSB
+     store (OneRegister reg) (MemVal8 out)
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 0)]     
+   SRAHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     let out = (mem `shiftR` 1) .|. (if testBit mem 7 then (bit 7) else 0) --Keep MSB
+     store (MemAddr hl) (MemVal8 out)
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit mem 0)]
+   SRLr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     let out = regVal `shiftR` 1
+     store (OneRegister reg) (MemVal8 out)
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 0)]
+   SRLHL -> do
+     MemVal16 hl <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hl)
+     let out = mem `shiftR` 1
+     store (MemAddr hl) (MemVal8 out)     
+     updateFlags[(FlagZ, toBit $ out == 0),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit mem 0)]     
