@@ -4,7 +4,8 @@ module CPU
 
  import Data.Word
  import Data.Either
- import Data.Bits
+ import Data.Bits ( (.&.) , (.|.), clearBit, setBit, bit, xor,
+                    shiftL, shiftR, Bits, complement) 
  import Data.Bool
 
  import Memory
@@ -133,6 +134,10 @@ module CPU
 
  data Flag = FlagZ | FlagN | FlagH | FlagC deriving Show
  data Bit = Zero | One deriving (Enum, Show)
+
+ complementBit :: Bit -> Bit
+ complementBit One  = Zero
+ complementBit Zero = One
 
  instance Num Bit where
    fromInteger = toBit
@@ -455,4 +460,53 @@ module CPU
      MemVal16 spVal <- load SP
      store SP (MemVal16 $ spVal - 1)
    
+   SWAPr reg -> do
+     MemVal8 regVal <- load (OneRegister reg)
+     let out = ((regVal .&. 0xF0) `shiftR` 4) + ((regVal .&. 0x0F) `shiftL` 4)
+     store (OneRegister reg) (MemVal8 out)
+     updateFlags [(FlagZ, toBit $ out == 0),
+                  (FlagN, Zero),
+                  (FlagH, Zero),
+                  (FlagC, Zero)]
+
+   SWAPHL -> do
+     MemVal16 hlVal <- load (TwoRegister H L)
+     MemVal8 mem <- load (MemAddr hlVal)
+     let out = ((mem .&. 0xF0) `shiftR` 4) + ((mem .&. 0x0F) `shiftL` 4)
+     store (MemAddr hlVal) (MemVal8 out)
+     updateFlags [(FlagZ, toBit $ out == 0),
+                  (FlagN, Zero),
+                  (FlagH, Zero),
+                  (FlagC, Zero)]
+   DAA -> do --TODO
+     MemVal8 aVal <- load (OneRegister A)
+     updateFlags [(FlagZ, toBit $ aVal == 0),
+                  (FlagH, Zero)]
+     
+
+   CPL -> do
+     MemVal8 aVal <- load (OneRegister A)
+     store (OneRegister A) (MemVal8 $ complement aVal)
+     updateFlags [(FlagN, One),
+                  (FlagH, One)]
+
+   CCF -> do
+     carryBit <- getFlagBit FlagC
+     updateFlags[(FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, complementBit carryBit)]
+     
+   SCF -> do
+     updateFlags[(FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, One)]
+
+   NOP  -> return ()
+   HALT -> return ()
+   STOP -> return ()
+   DI   -> return () --TODO
+   EI   -> return () --TODO
    
+     
+     
+     
