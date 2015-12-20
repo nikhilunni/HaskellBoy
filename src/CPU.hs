@@ -424,4 +424,35 @@ module CPU
                   (FlagN, Zero),
                   (FlagH, toBit $ diff .&. 0x0F > mem .&. 0x0F)]
      
+   ADDHLrr reg1 reg2 -> do
+     MemVal16 regVal <- load (TwoRegister reg1 reg2)
+     MemVal16 hlVal  <- load (TwoRegister H L)
+     let sum = regVal + hlVal
+     store (TwoRegister H L) (MemVal16 sum)
+     updateFlags [(FlagN, Zero),
+                  (FlagH, toBit $ sum .&. 0x0FFF < hlVal .&. 0x0FFF),
+                  (FlagC, toBit $ sum < hlVal)]
+   ADDSPn imm -> do
+     MemVal16 spVal <- load SP
+     let sum = spVal + (fromIntegral imm)
+     updateFlags [(FlagZ, Zero),
+                  (FlagN, Zero),
+                  (FlagH, toBit $ sum .&. 0x0FFF < spVal .&. 0x0FFF),
+                  (FlagC, toBit $ sum < spVal)]
+   INCrr reg1 reg2 -> do
+     MemVal16 regVal <- load (TwoRegister reg1 reg2)
+     store (TwoRegister reg1 reg2) (MemVal16 $ regVal + 1)
      
+   INCSP -> do
+     MemVal16 spVal <- load SP
+     store SP (MemVal16 $ spVal + 1)
+     
+   DECrr reg1 reg2 -> do
+     MemVal16 regVal <- load (TwoRegister reg1 reg2)
+     store (TwoRegister reg1 reg2) (MemVal16 $ regVal - 1)
+     
+   DECSP -> do
+     MemVal16 spVal <- load SP
+     store SP (MemVal16 $ spVal - 1)
+   
+   
