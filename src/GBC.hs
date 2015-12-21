@@ -12,6 +12,9 @@ module GBC
  import Monad
  import Cartridge
 
+ import System.Exit
+ import System.IO 
+
  newtype GBC a = GBC (ReaderT (Memory RealWorld) IO a)
                  deriving (Functor, Applicative, Monad, MonadIO)
  
@@ -22,7 +25,8 @@ module GBC
    store address val = GBC $ do
      mem <- ask
      lift $ stToIO $ Memory.write mem address val
-
+   emulationError msg = GBC $ do
+     lift $ hPutStrLn stderr msg >> exitFailure
 
 
  runGBC :: GBC a -> IO a

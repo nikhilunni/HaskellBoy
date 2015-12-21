@@ -8,13 +8,20 @@ module CPU
                     shiftL, shiftR, rotateR, rotateL, Bits, complement,
                     testBit) 
  import Data.Bool
+ import Data.Vector (Vector, fromList, (!))
+
+ import Control.Applicative
+ import Control.Monad
 
  import Memory
  import Monad
+ import GBC
 
+ type Opcode = Word8
 
  data Instruction =
- --See : http://marc.rawer.de/Gameboy/Docs/GBCPUman.pdf
+ {-See : http://marc.rawer.de/Gameboy/Docs/GBCPUman.pdf,
+         http://www.chrisantonellis.com/files/gameboy/gb-programming-manual.pdf -}
  --8-bit loads
       LDrn Register Word8             --Load immediate into register
     | LDrr Register Register          --Load register into register
@@ -25,7 +32,7 @@ module CPU
     | LDHLr Register                  --Load register into (HL)
     | LDBCr Register                  --Load register into (BC)
     | LDDEr Register                  --Load register into (DE)
-    | LDHLn Word16                    --Load immediate into (HL)
+    | LDHLn Word8                     --Load immediate into (HL)
     | LDnnr Word16 Register           --Load register into (immediate)
     | LDrr' Register Register         --Load (FF00 + register) into register
     | LDrr'' Register Register        --Load register into (FF00 + register)
@@ -33,6 +40,7 @@ module CPU
     | LDrn' Register Word8            --Load (FF00 + immediate) into register
  --16-bit loads
     | LDrrnn Register Register Word16 --Load immediate into [register,register]
+    | LDSPnn Word16                   --Load immediate into SP
     | LDSPHL                          --Load HL into SP
     | LDHLSPn Word8                   --Load SP+n into (HL)
     | LDnnSP Word16                   --Load SP into (nn)
@@ -69,6 +77,7 @@ module CPU
     | DECHL                           --Decrement (HL)
  --16-bit ALU
     | ADDHLrr Register Register       --Add (Register,Register) to HL
+    | ADDHLSP                         --Add SP to HL
     | ADDSPn Word8                    --Add immediate to SP
     | INCrr Register Register         --Increment (Register,Register)
     | INCSP                           --Increment SP
@@ -123,6 +132,8 @@ module CPU
     | RET                             --Pop two bytes from stack, and jump to that address
     | RETcc FlagCondition             --RET if cc conditions are true (see specs)
     | RETI                            --RET, then enable interrupts
+ --Helper Instructions
+    | CBInstruction                   --Execute CB opcode instructions
 
  
 --Helper Functions  
@@ -135,7 +146,7 @@ module CPU
 
  data Flag = FlagZ | FlagN | FlagH | FlagC deriving Show
  data Bit = Zero | One deriving (Enum, Show)
- data RestartAddress = R00 | R08 | R18 | R20 | R28 | R30 | R38
+ data RestartAddress = R00 | R08 | R10 | R18 | R20 | R28 | R30 | R38
 
  complementBit :: Bit -> Bit
  complementBit One  = Zero
@@ -144,6 +155,7 @@ module CPU
  getRestartAddress :: RestartAddress -> Word16
  getRestartAddress R00 = 0x0000
  getRestartAddress R08 = 0x0008
+ getRestartAddress R10 = 0x0010
  getRestartAddress R18 = 0x0018
  getRestartAddress R20 = 0x0020
  getRestartAddress R28 = 0x0028
@@ -308,10 +320,324 @@ module CPU
                              (FlagC, Zero)]
    
 
- intify = toInteger.fromIntegral
+
+ load8_imm :: Emulator m => m Word8
+ load8_imm = do
+   MemVal16 pc <- load PC
+   store PC (MemVal16 $ pc+1)
+   MemVal8 next8 <- load (MemAddr pc)
+   return next8
+              
+ load16_imm :: Emulator m => m Word16
+ load16_imm = do
+   lower <- load8_imm
+   upper <- load8_imm
+   return $ ((fromIntegral upper) `shiftL` 8) + (fromIntegral lower)
+   
+
+ 
+
  (.^.) = xor
 ------------------
+
+ streamNextInstruction :: Emulator m => m ()
+ streamNextInstruction = do
+   MemVal16 pc <- load PC
+   store PC (MemVal16 $ pc + 1)
+   MemVal8 next <- load (MemAddr pc)
+   nextInstruction <- decodeInstruction next
+   executeInstruction nextInstruction
+
+
+ --TODO : Convert to immutable vector
+ --See : http://imrannazar.com/Gameboy-Z80-Opcode-Map
+ opcodeLookups :: Emulator m => [m Instruction]
+ opcodeLookups = [return NOP,                             --0
+                  LDrrnn B C <$> load16_imm,
+                  return $ LDBCr A,
+                  return $ INCrr B C,
+                  return $ INCr B,
+                  return $ DECr B,
+                  LDrn B <$> load8_imm,
+                  return $ RLCr A,
+                  LDnnSP <$> load16_imm,
+                  return $ ADDHLrr B C,
+                  return $ LDrBC A,
+                  return $ DECrr B C,
+                  return $ INCr C,
+                  return $ DECr C,
+                  LDrn C <$> load8_imm,
+                  return $ RRCr A,
+                  
+                  return $ STOP,                          --1
+                  LDrrnn D E <$> load16_imm,
+                  return $ LDDEr A,
+                  return $ INCrr D E,
+                  return $ INCr D,
+                  return $ DECr D,
+                  LDrn D <$> load8_imm,
+                  return $ RLr A,
+                  JRn <$> load8_imm,
+                  return $ ADDHLrr D E,
+                  return $ LDrDE A,
+                  return $ DECrr D E,
+                  return $ INCr E,
+                  return $ DECr E,
+                  LDrn E <$> load8_imm,
+                  return $ RRr A,
+
+                  JRccn CondNZ <$> load8_imm,             --2
+                  LDrrnn H L <$> load16_imm,
+                  return $ LDrHL A,
+                  return $ INCrr H L,
+                  return $ INCr H,
+                  return $ DECr H,
+                  LDrn H <$> load8_imm,
+                  return DAA,
+                  JRccn CondZ <$> load8_imm,
+                  return $ ADDHLrr H L,
+                  return $ LDrHL A,
+                  return DECHL,
+                  return $ INCr L,
+                  return $ DECr L,
+                  LDrn L <$> load8_imm,
+                  return CPL,
+
+                  JRccn CondNC <$> load8_imm,             --3
+                  LDSPnn <$> load16_imm,
+                  return $ LDHLr A,
+                  return $ INCSP,
+                  return INCHL,
+                  return DECHL,
+                  LDHLn <$> load8_imm,
+                  return SCF,
+                  JRccn CondC <$> load8_imm,
+                  return ADDHLSP,
+                  return $ LDrHL A,
+                  return DECSP,
+                  return $ INCr A,
+                  return $ DECr A,
+                  LDrn A <$> load8_imm,
+                  return CCF,
+
+                  return $ LDrr B B,                      --4
+                  return $ LDrr B C,
+                  return $ LDrr B D,
+                  return $ LDrr B E,
+                  return $ LDrr B H,
+                  return $ LDrr B L,
+                  return $ LDrHL B,
+                  return $ LDrr B A,
+                  return $ LDrr C B,
+                  return $ LDrr C C,
+                  return $ LDrr C D,
+                  return $ LDrr C E,
+                  return $ LDrr C H,
+                  return $ LDrr C L,
+                  return $ LDrHL C,
+                  return $ LDrr C A,
+
+                  return $ LDrr D B,                      --5
+                  return $ LDrr D C,
+                  return $ LDrr D D,
+                  return $ LDrr D E,
+                  return $ LDrr D H,
+                  return $ LDrr D L,
+                  return $ LDrHL D,
+                  return $ LDrr D A,
+                  return $ LDrr E B,
+                  return $ LDrr E C,
+                  return $ LDrr E D,
+                  return $ LDrr E E,
+                  return $ LDrr E H,
+                  return $ LDrr E L,
+                  return $ LDrHL E,
+                  return $ LDrr E A,
+                  
+                  return $ LDrr H B,                      --6
+                  return $ LDrr H C,
+                  return $ LDrr H D,
+                  return $ LDrr H E,
+                  return $ LDrr H H,
+                  return $ LDrr H L,
+                  return $ LDrHL H,
+                  return $ LDrr H A,
+                  return $ LDrr L B,
+                  return $ LDrr L C,
+                  return $ LDrr L D,
+                  return $ LDrr L E,
+                  return $ LDrr L H,
+                  return $ LDrr L L,
+                  return $ LDrHL L,
+                  return $ LDrr L A,
+
+                  return $ LDHLr B,                       --7
+                  return $ LDHLr C,
+                  return $ LDHLr D,
+                  return $ LDHLr E,
+                  return $ LDHLr H,
+                  return $ LDHLr L,
+                  return HALT,
+                  return $ LDHLr A,
+                  return $ LDrr A B,
+                  return $ LDrr A C,
+                  return $ LDrr A D,
+                  return $ LDrr A E,
+                  return $ LDrr A H,
+                  return $ LDrr A L,
+                  return $ LDrHL A,
+                  return $ LDrr A A,
+
+                  return $ ADDr B,                        --8
+                  return $ ADDr C,
+                  return $ ADDr D,
+                  return $ ADDr E,
+                  return $ ADDr H,
+                  return $ ADDr L,
+                  return ADDHL,
+                  return $ ADDr A,
+                  return $ ADCr B,
+                  return $ ADCr C,
+                  return $ ADCr D,
+                  return $ ADCr E,
+                  return $ ADCr H,
+                  return $ ADCr L,
+                  return ADCHL,
+                  return $ ADCr A,
+
+                  return $ SUBr B,                        --9
+                  return $ SUBr C,
+                  return $ SUBr D,
+                  return $ SUBr E,
+                  return $ SUBr H,
+                  return $ SUBr L,
+                  return SUBHL,
+                  return $ SBCr A,
+                  return $ SBCr B,
+                  return $ SBCr C,
+                  return $ SBCr D,
+                  return $ SBCr E,
+                  return $ SBCr H,
+                  return $ SBCr L,
+                  return SBCHL,
+                  return $ SBCr A,
+
+                  return $ ANDr B,                        --A
+                  return $ ANDr C,
+                  return $ ANDr D,
+                  return $ ANDr E,
+                  return $ ANDr H,
+                  return $ ANDr L,
+                  return ANDHL,
+                  return $ XORr A,
+                  return $ XORr B,
+                  return $ XORr C,
+                  return $ XORr D,
+                  return $ XORr E,
+                  return $ XORr H,
+                  return $ XORr L,
+                  return XORHL,
+                  return $ XORr A,
+
+                  return $ ORr B,                         --B
+                  return $ ORr C,
+                  return $ ORr D,
+                  return $ ORr E,
+                  return $ ORr H,
+                  return $ ORr L,
+                  return ORHL,
+                  return $ CPr A,
+                  return $ CPr B,
+                  return $ CPr C,
+                  return $ CPr D,
+                  return $ CPr E,
+                  return $ CPr H,
+                  return $ CPr L,
+                  return CPHL,
+                  return $ CPr A,
+
+                  return $ RETcc CondNZ,                  --C
+                  return $ POPrr D E,
+                  JPccnn CondNZ <$> load16_imm,
+                  JPnn <$> load16_imm,
+                  CALLccnn CondNZ <$> load16_imm,
+                  return $ PUSHrr B C,
+                  ADDn <$> load8_imm,
+                  return $ RSTn R00,
+                  return $ RETcc CondZ,
+                  return RET,
+                  JPccnn CondZ <$> load16_imm,
+                  return $ CBInstruction,
+                  CALLccnn CondZ <$> load16_imm,
+                  CALLnn <$> load16_imm,
+                  ADCn <$> load8_imm,
+                  return $ RSTn R08,
+
+                  return $ RETcc CondNC,                  --D
+                  return $ POPrr D E,
+                  JPccnn CondNC <$> load16_imm,
+                  return NOP,
+                  CALLccnn CondNC <$> load16_imm,
+                  return $ PUSHrr D E,
+                  SUBn <$> load8_imm,
+                  return $ RSTn R10,
+                  return $ RETcc CondC,
+                  return RETI,
+                  JPccnn CondC <$> load16_imm,
+                  return NOP,
+                  CALLccnn CondC <$> load16_imm,
+                  return NOP,
+                  SBCn <$> load8_imm,
+                  return $ RSTn R18,
+
+                  LDnr `liftM` load8_imm `ap` (return A), --E
+                  return $ POPrr H L,
+                  return $ LDrr'' C A,
+                  return NOP,
+                  return NOP,
+                  return $ PUSHrr H L,
+                  ANDn <$> load8_imm,
+                  return $ RSTn R20,
+                  ADDSPn <$> load8_imm,
+                  return JPHL,
+                  LDnnr `liftM` load16_imm `ap` (return A),
+                  return NOP,
+                  return NOP,
+                  return NOP,
+                  XORn <$> load8_imm,
+                  return $ RSTn R28,
+
+                  LDrn' A <$> load8_imm,                  --F
+                  return $ POPrr A F,
+                  return NOP,
+                  return DI,
+                  return NOP,
+                  return $ PUSHrr A F,
+                  ORn <$> load8_imm,
+                  return $ RSTn R30,
+                  LDHLSPn  <$> load8_imm,
+                  return LDSPHL,
+                  LDrnn A <$> load16_imm,
+                  return EI,
+                  return NOP,
+                  return NOP,
+                  CPn <$> load8_imm,
+                  return $ RSTn R38
+                 ]
+
+ cbOpcodeLookups :: [m Instruction]
+ cbOpcodeLookups = [{-TODO-}]
  
+ decodeInstruction :: Emulator m => Opcode -> m Instruction
+ decodeInstruction op = opcodeLookups !! (fromIntegral op)
+
+ decodeCBInstruction :: Emulator m => Opcode -> m Instruction
+ decodeCBInstruction op = cbOpcodeLookups !! (fromIntegral op)
+  
+ 
+
+   
+
  executeInstruction :: Emulator m => Instruction -> m ()
  executeInstruction instr = case instr of
 --8-bit loads   
@@ -346,7 +672,7 @@ module CPU
      store (MemAddr mem) m
    LDHLn imm -> do
      MemVal16 mem <- load (TwoRegister H L)
-     store (MemAddr mem) (MemVal16 imm)
+     store (MemAddr mem) (MemVal8 imm)
    LDnnr imm16 reg -> do
      m <- load (OneRegister reg)
      store (MemAddr imm16) m
@@ -367,6 +693,8 @@ module CPU
 --16-bit loads
    LDrrnn reg1 reg2 imm16 -> do
      store (TwoRegister reg1 reg2) (MemVal16 imm16 )
+   LDSPnn imm16 -> do
+     store SP (MemVal16 imm16)
    LDSPHL -> do
      val <- load (TwoRegister H L)
      store SP val
@@ -473,6 +801,15 @@ module CPU
      updateFlags [(FlagN, Zero),
                   (FlagH, toBit $ sum .&. 0x0FFF < hlVal .&. 0x0FFF),
                   (FlagC, toBit $ sum < hlVal)]
+   ADDHLSP -> do
+     MemVal16 regVal <- load SP
+     MemVal16 hlVal  <- load (TwoRegister H L)
+     let sum = regVal + hlVal
+     store (TwoRegister H L) (MemVal16 sum)
+     updateFlags [(FlagN, Zero),
+                  (FlagH, toBit $ sum .&. 0x0FFF < hlVal .&. 0x0FFF),
+                  (FlagC, toBit $ sum < hlVal)]
+       
    ADDSPn imm -> do
      MemVal16 spVal <- load SP
      let sum = spVal + (fromIntegral imm)
@@ -761,4 +1098,10 @@ module CPU
    RETI -> do
      executeInstruction RET
      --TODO : Enable Interrupts
-     
+
+   CBInstruction -> do
+     MemVal16 pc <- load PC
+     store PC (MemVal16 $ pc + 1)
+     MemVal8 next <- load (MemAddr pc)
+     nextInstruction <- decodeCBInstruction next
+     executeInstruction nextInstruction
