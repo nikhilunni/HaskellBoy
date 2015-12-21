@@ -1,5 +1,5 @@
 module CPU
-       (  Instruction
+       (  streamNextInstruction, executeInstruction
        ) where
 
  import Data.Word
@@ -15,7 +15,7 @@ module CPU
 
  import Memory
  import Monad
- import GBC
+
 
  type Opcode = Word8
 
@@ -134,7 +134,7 @@ module CPU
     | RETI                            --RET, then enable interrupts
  --Helper Instructions
     | CBInstruction                   --Execute CB opcode instructions
-
+    deriving Show
  
 --Helper Functions  
  ld :: Emulator m => Register -> Either Register Word8 -> m ()
@@ -146,7 +146,7 @@ module CPU
 
  data Flag = FlagZ | FlagN | FlagH | FlagC deriving Show
  data Bit = Zero | One deriving (Enum, Show)
- data RestartAddress = R00 | R08 | R10 | R18 | R20 | R28 | R30 | R38
+ data RestartAddress = R00 | R08 | R10 | R18 | R20 | R28 | R30 | R38 deriving Show
 
  complementBit :: Bit -> Bit
  complementBit One  = Zero
@@ -340,13 +340,14 @@ module CPU
  (.^.) = xor
 ------------------
 
- streamNextInstruction :: Emulator m => m ()
+ streamNextInstruction :: Emulator m => m Instruction
  streamNextInstruction = do
    MemVal16 pc <- load PC
    store PC (MemVal16 $ pc + 1)
    MemVal8 next <- load (MemAddr pc)
-   nextInstruction <- decodeInstruction next
-   executeInstruction nextInstruction
+   decodeInstruction next
+--   nextInstruction <- decodeInstruction next
+--   executeInstruction nextInstruction
 
 
  --TODO : Convert to immutable vector
@@ -625,9 +626,280 @@ module CPU
                   return $ RSTn R38
                  ]
 
- cbOpcodeLookups :: [m Instruction]
- cbOpcodeLookups = [{-TODO-}]
- 
+ cbOpcodeLookups :: Emulator m => [m Instruction]
+ cbOpcodeLookups = [return $ RLCr B,                --0
+                    return $ RLCr C,
+                    return $ RLCr D,
+                    return $ RLCr E,
+                    return $ RLCr H,
+                    return $ RLCr L,
+                    return $ RLCHL,
+                    return $ RLCr A,
+                    return $ RRCr B,
+                    return $ RRCr C,
+                    return $ RRCr D,
+                    return $ RRCr E,
+                    return $ RRCr H,
+                    return $ RRCr L,
+                    return $ RRCHL,
+                    return $ RRCr A,
+
+                    return $ RLr B,                --1
+                    return $ RLr C,
+                    return $ RLr D,
+                    return $ RLr E,
+                    return $ RLr H,
+                    return $ RLr L,
+                    return $ RLHL,
+                    return $ RLr A,
+                    return $ RRr B,
+                    return $ RRr C,
+                    return $ RRr D,
+                    return $ RRr E,
+                    return $ RRr H,
+                    return $ RRr L,
+                    return $ RRHL,
+                    return $ RRr A,
+
+                    return $ SLAr B,                --2
+                    return $ SLAr C,
+                    return $ SLAr D,
+                    return $ SLAr E,
+                    return $ SLAr H,
+                    return $ SLAr L,
+                    return $ SLAHL,
+                    return $ SLAr A,
+                    return $ SRAr B,
+                    return $ SRAr C,
+                    return $ SRAr D,
+                    return $ SRAr E,
+                    return $ SRAr H,
+                    return $ SRAr L,
+                    return $ SRAHL,
+                    return $ SRAr A,
+
+                    return $ SWAPr B,                --3
+                    return $ SWAPr C,
+                    return $ SWAPr D,
+                    return $ SWAPr E,
+                    return $ SWAPr H,
+                    return $ SWAPr L,
+                    return $ SWAPHL,
+                    return $ SWAPr A,
+                    return $ SRLr B,
+                    return $ SRLr C,
+                    return $ SRLr D,
+                    return $ SRLr E,
+                    return $ SRLr H,
+                    return $ SRLr L,
+                    return $ SRLHL,
+                    return $ SRLr A,
+
+                    return $ BITnr B 0,                --4
+                    return $ BITnr C 0,
+                    return $ BITnr D 0,
+                    return $ BITnr E 0,
+                    return $ BITnr H 0,
+                    return $ BITnr L 0,
+                    return $ BITnHL 0,
+                    return $ BITnr A 0,
+                    return $ BITnr B 1,
+                    return $ BITnr C 1,
+                    return $ BITnr D 1,
+                    return $ BITnr E 1,
+                    return $ BITnr H 1,
+                    return $ BITnr L 1,
+                    return $ BITnHL 1,
+                    return $ BITnr A 1,
+
+                    return $ BITnr B 2,                --5
+                    return $ BITnr C 2,
+                    return $ BITnr D 2,
+                    return $ BITnr E 2,
+                    return $ BITnr H 2,
+                    return $ BITnr L 2,
+                    return $ BITnHL 2,
+                    return $ BITnr A 2,
+                    return $ BITnr B 3,
+                    return $ BITnr C 3,
+                    return $ BITnr D 3,
+                    return $ BITnr E 3,
+                    return $ BITnr H 3,
+                    return $ BITnr L 3,
+                    return $ BITnHL 3,
+                    return $ BITnr A 3,
+
+                    return $ BITnr B 4,                --6
+                    return $ BITnr C 4,
+                    return $ BITnr D 4,
+                    return $ BITnr E 4,
+                    return $ BITnr H 4,
+                    return $ BITnr L 4,
+                    return $ BITnHL 4,
+                    return $ BITnr A 4,
+                    return $ BITnr B 5,
+                    return $ BITnr C 5,
+                    return $ BITnr D 5,
+                    return $ BITnr E 5,
+                    return $ BITnr H 5,
+                    return $ BITnr L 5,
+                    return $ BITnHL 5,
+                    return $ BITnr A 5,
+
+                    return $ BITnr B 6,                --7
+                    return $ BITnr C 6,
+                    return $ BITnr D 6,
+                    return $ BITnr E 6,
+                    return $ BITnr H 6,
+                    return $ BITnr L 6,
+                    return $ BITnHL 6,
+                    return $ BITnr A 6,
+                    return $ BITnr B 7,
+                    return $ BITnr C 7,
+                    return $ BITnr D 7,
+                    return $ BITnr E 7,
+                    return $ BITnr H 7,
+                    return $ BITnr L 7,
+                    return $ BITnHL 7,
+                    return $ BITnr A 7,
+
+                    return $ RESnr B 0,                --8
+                    return $ RESnr C 0,
+                    return $ RESnr D 0,
+                    return $ RESnr E 0,
+                    return $ RESnr H 0,
+                    return $ RESnr L 0,
+                    return $ RESnHL 0,
+                    return $ RESnr A 0,
+                    return $ RESnr B 1,
+                    return $ RESnr C 1,
+                    return $ RESnr D 1,
+                    return $ RESnr E 1,
+                    return $ RESnr H 1,
+                    return $ RESnr L 1,
+                    return $ RESnHL 1,
+                    return $ RESnr A 1,
+
+                    return $ RESnr B 2,                --9
+                    return $ RESnr C 2,
+                    return $ RESnr D 2,
+                    return $ RESnr E 2,
+                    return $ RESnr H 2,
+                    return $ RESnr L 2,
+                    return $ RESnHL 2,
+                    return $ RESnr A 2,
+                    return $ RESnr B 3,
+                    return $ RESnr C 3,
+                    return $ RESnr D 3,
+                    return $ RESnr E 3,
+                    return $ RESnr H 3,
+                    return $ RESnr L 3,
+                    return $ RESnHL 3,
+                    return $ RESnr A 3,
+
+                    return $ RESnr B 4,                --A
+                    return $ RESnr C 4,
+                    return $ RESnr D 4,
+                    return $ RESnr E 4,
+                    return $ RESnr H 4,
+                    return $ RESnr L 4,
+                    return $ RESnHL 4,
+                    return $ RESnr A 4,
+                    return $ RESnr B 5,
+                    return $ RESnr C 5,
+                    return $ RESnr D 5,
+                    return $ RESnr E 5,
+                    return $ RESnr H 5,
+                    return $ RESnr L 5,
+                    return $ RESnHL 5,
+                    return $ RESnr A 5,
+
+                    return $ RESnr B 6,                --B
+                    return $ RESnr C 6,
+                    return $ RESnr D 6,
+                    return $ RESnr E 6,
+                    return $ RESnr H 6,
+                    return $ RESnr L 6,
+                    return $ RESnHL 6,
+                    return $ RESnr A 6,
+                    return $ RESnr B 7,
+                    return $ RESnr C 7,
+                    return $ RESnr D 7,
+                    return $ RESnr E 7,
+                    return $ RESnr H 7,
+                    return $ RESnr L 7,
+                    return $ RESnHL 7,
+                    return $ RESnr A 7,
+
+                    return $ SETnr B 0,                --C
+                    return $ SETnr C 0,
+                    return $ SETnr D 0,
+                    return $ SETnr E 0,
+                    return $ SETnr H 0,
+                    return $ SETnr L 0,
+                    return $ SETnHL 0,
+                    return $ SETnr A 0,
+                    return $ SETnr B 1,
+                    return $ SETnr C 1,
+                    return $ SETnr D 1,
+                    return $ SETnr E 1,
+                    return $ SETnr H 1,
+                    return $ SETnr L 1,
+                    return $ SETnHL 1,
+                    return $ SETnr A 1,
+
+                    return $ SETnr B 2,                --D
+                    return $ SETnr C 2,
+                    return $ SETnr D 2,
+                    return $ SETnr E 2,
+                    return $ SETnr H 2,
+                    return $ SETnr L 2,
+                    return $ SETnHL 2,
+                    return $ SETnr A 2,
+                    return $ SETnr B 3,
+                    return $ SETnr C 3,
+                    return $ SETnr D 3,
+                    return $ SETnr E 3,
+                    return $ SETnr H 3,
+                    return $ SETnr L 3,
+                    return $ SETnHL 3,
+                    return $ SETnr A 3,
+
+                    return $ SETnr B 4,                --E
+                    return $ SETnr C 4,
+                    return $ SETnr D 4,
+                    return $ SETnr E 4,
+                    return $ SETnr H 4,
+                    return $ SETnr L 4,
+                    return $ SETnHL 4,
+                    return $ SETnr A 4,
+                    return $ SETnr B 5,
+                    return $ SETnr C 5,
+                    return $ SETnr D 5,
+                    return $ SETnr E 5,
+                    return $ SETnr H 5,
+                    return $ SETnr L 5,
+                    return $ SETnHL 5,
+                    return $ SETnr A 5,
+
+                    return $ SETnr B 6,                --F
+                    return $ SETnr C 6,
+                    return $ SETnr D 6,
+                    return $ SETnr E 6,
+                    return $ SETnr H 6,
+                    return $ SETnr L 6,
+                    return $ SETnHL 6,
+                    return $ SETnr A 6,
+                    return $ SETnr B 7,
+                    return $ SETnr C 7,
+                    return $ SETnr D 7,
+                    return $ SETnr E 7,
+                    return $ SETnr H 7,
+                    return $ SETnr L 7,
+                    return $ SETnHL 7,
+                    return $ SETnr A 7                    
+                    ]
+
  decodeInstruction :: Emulator m => Opcode -> m Instruction
  decodeInstruction op = opcodeLookups !! (fromIntegral op)
 

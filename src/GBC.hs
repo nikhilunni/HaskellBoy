@@ -3,6 +3,7 @@
 module GBC
  where
 
+ import Control.Monad
  import Control.Monad.Reader
  import Control.Monad.ST
  import Control.Monad.Trans
@@ -11,6 +12,8 @@ module GBC
  import Memory
  import Monad
  import Cartridge
+
+ import CPU (streamNextInstruction, executeInstruction)
 
  import System.Exit
  import System.IO 
@@ -40,10 +43,17 @@ module GBC
    store (OneRegister A) (MemVal8 2)
    load (OneRegister A)
 
+ cpuLoop :: Emulator m => m ()
+ cpuLoop = do
+   streamNextInstruction >>= executeInstruction
+   cpuLoop
+
  main :: IO ()
  main = do
-   cart <- readCartridge "CPU.hs"
+   cart <- readCartridge "../roms/blue.gb"
    runGBC $ do
      storeCartridge cart
-     MemVal8 thing <- load (MemAddr 0x0000)
-     liftIO $ putStrLn $ show $ thing
+     forever $ do       
+       next <- streamNextInstruction
+       liftIO $ putStrLn $ show $ next     
+       executeInstruction next

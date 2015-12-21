@@ -41,7 +41,7 @@ module Memory
    memory' <- newArray_ (0x0000, 0xFFFF)
    registers' <- newArray (0x0, 0x8) 0 --Fix this...
    sp' <- newSTRef 0xFFFE
-   pc' <- newSTRef 0x0000
+   pc' <- newSTRef 0x0100
    return Memory { memory = memory'
                  , registers = registers'
                  , sp = sp'

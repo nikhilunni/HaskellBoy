@@ -108,3 +108,4 @@ cabal.config
 *.x86_64
 *.hex
 
+roms/
