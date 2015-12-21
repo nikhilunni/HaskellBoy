@@ -746,10 +746,10 @@ module CPU
      store SP (MemVal16 $ sp - 2)
      store PC (MemVal16 $ getRestartAddress rAddress)
 
-   RET -> do --TODO : Switch order of upper/lower?
+   RET -> do
      MemVal16 sp <- load SP
-     MemVal8 upperByte <- load (MemAddr $ sp)
-     MemVal8 lowerByte <- load (MemAddr $ sp + 1)
+     MemVal8 lowerByte <- load (MemAddr $ sp)
+     MemVal8 upperByte <- load (MemAddr $ sp + 1)
      let jumpAddr = ( (fromIntegral upperByte) `shiftR` 8 ) + (fromIntegral lowerByte)
      store SP (MemVal16 $ sp + 2)
      store PC (MemVal16 jumpAddr)
