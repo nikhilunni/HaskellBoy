@@ -71,4 +71,4 @@ module Memory
    writeArray (registers mem) (regNum regB) $ fromIntegral (w .&. 0xFF)
  write mem (MemAddr ptr) (MemVal8 w)            = writeArray (memory mem) ptr w
  write mem SP (MemVal16 w) = writeSTRef (sp mem) w
--- write mem PC (MemVal16 w) = writeSTRef (pc mem) w
+ write mem PC (MemVal16 w) = writeSTRef (pc mem) w

@@ -15,3 +15,5 @@ module Cartridge
 
  storeCartridge :: (Emulator m) => [Word8] -> m ()
  storeCartridge ws = mapM_ (\(c,i) -> store (MemAddr i) (MemVal8 c)) $ zip ws [0..]
+
+ 

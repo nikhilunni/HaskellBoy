@@ -116,12 +116,12 @@ module CPU
     | JRccn FlagCondition Word8       --Jump to current address + n if cc conditions are true (see specs)
  --Calls
     | CALLnn Word16                   --Push address of next instruction onto stack, and jump to address nn
-    | CALLccnn Word16 Word16          --Call address nn if cc conditions are true (see specs)
+    | CALLccnn FlagCondition Word16   --Call address nn if cc conditions are true (see specs)
  --Restarts
-    | RSTn Word8                      --Push current address on stack, jump to address n
+    | RSTn RestartAddress             --Push current address on stack, jump to address n
  --Returns
     | RET                             --Pop two bytes from stack, and jump to that address
-    | RETcc Word16                    --RET if cc conditions are true (see specs)
+    | RETcc FlagCondition             --RET if cc conditions are true (see specs)
     | RETI                            --RET, then enable interrupts
 
  
@@ -135,10 +135,20 @@ module CPU
 
  data Flag = FlagZ | FlagN | FlagH | FlagC deriving Show
  data Bit = Zero | One deriving (Enum, Show)
+ data RestartAddress = R00 | R08 | R18 | R20 | R28 | R30 | R38
 
  complementBit :: Bit -> Bit
  complementBit One  = Zero
  complementBit Zero = One
+
+ getRestartAddress :: RestartAddress -> Word16
+ getRestartAddress R00 = 0x0000
+ getRestartAddress R08 = 0x0008
+ getRestartAddress R18 = 0x0018
+ getRestartAddress R20 = 0x0020
+ getRestartAddress R28 = 0x0028
+ getRestartAddress R30 = 0x0030
+ getRestartAddress R38 = 0x0038
 
  data FlagCondition = CondNZ | CondZ | CondNC | CondC deriving Show
  
@@ -695,23 +705,60 @@ module CPU
      store (MemAddr hl) (MemVal8 $ mem `clearBit` (fromIntegral imm) )
    
    JPnn imm -> do
-     store SP (MemVal16 imm)
+     store PC (MemVal16 imm)
 
    JPccnn cond imm -> do
      toJump <- testFlagCondition cond
-     if toJump then store SP (MemVal16 imm) else return ()
+     if toJump then store PC (MemVal16 imm) else return ()
    
    JPHL -> do
      MemVal16 hl <- load (TwoRegister H L)
      MemVal8 mem <- load (MemAddr hl)
-     store SP (MemVal16 $ fromIntegral mem)
+     store PC (MemVal16 $ fromIntegral mem)
 
    JRn imm -> do
-     MemVal16 currAddr <- load SP
-     store SP (MemVal16 $ currAddr + fromIntegral imm)
+     MemVal16 currAddr <- load PC
+     store PC (MemVal16 $ currAddr + fromIntegral imm)
      
    JRccn cond imm -> do
-     MemVal16 currAddr <- load SP
+     MemVal16 currAddr <- load PC
      toJump <- testFlagCondition cond
-     if toJump then store SP (MemVal16 $ currAddr + fromIntegral imm) else return ()
+     if toJump then store PC (MemVal16 $ currAddr + fromIntegral imm) else return ()
 
+   CALLnn imm -> do
+     MemVal16 sp <- load SP
+     MemVal16 pc <- load PC
+     let nextInstrPC = pc + 3
+     store (MemAddr $ (sp-1) .&. 0xFFFF) (MemVal8 $ fromIntegral $ nextInstrPC `shiftR` 8)
+     store (MemAddr $ (sp-2) .&. 0xFFFF) (MemVal8 $ fromIntegral $ nextInstrPC .&. 0x00FF)
+     store SP (MemVal16 $ sp - 2)
+     store PC (MemVal16 imm)
+
+   CALLccnn cond imm -> do
+     toJump <- testFlagCondition cond
+     if toJump then executeInstruction $ CALLnn imm else return ()
+
+   RSTn rAddress -> do
+     MemVal16 sp <- load SP
+     MemVal16 pc <- load PC
+     store (MemAddr $ (sp-1) .&. 0xFFFF) (MemVal8 $ fromIntegral $ pc `shiftR` 8)
+     store (MemAddr $ (sp-2) .&. 0xFFFF) (MemVal8 $ fromIntegral $ pc .&. 0x00FF)
+     store SP (MemVal16 $ sp - 2)
+     store PC (MemVal16 $ getRestartAddress rAddress)
+
+   RET -> do --TODO : Switch order of upper/lower?
+     MemVal16 sp <- load SP
+     MemVal8 upperByte <- load (MemAddr $ sp)
+     MemVal8 lowerByte <- load (MemAddr $ sp + 1)
+     let jumpAddr = ( (fromIntegral upperByte) `shiftR` 8 ) + (fromIntegral lowerByte)
+     store SP (MemVal16 $ sp + 2)
+     store PC (MemVal16 jumpAddr)
+
+   RETcc cond -> do
+     toJump <- testFlagCondition cond
+     if toJump then executeInstruction RET else return ()
+
+   RETI -> do
+     executeInstruction RET
+     --TODO : Enable Interrupts
+     
