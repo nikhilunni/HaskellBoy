@@ -1,5 +1,6 @@
 module CPU
-       (  streamNextInstruction, executeInstruction
+       (  streamNextInstruction, executeInstruction, handleInterrupts,
+          Bit
        ) where
 
  import Data.Word
@@ -91,10 +92,10 @@ module CPU
     | CCF                             --Complement carry flag
     | SCF                             --Set carry flag
     | NOP                             --No operation
-    | HALT                            --Power down CPU until interupt
+    | HALT                            --Power down CPU until interrupt
     | STOP                            --Halt CPU & LCD until button pressed
-    | DI                              --Disable interrupts
-    | EI                              --Enable interrupts
+    | DI                              --Disable interrupts (IME = 0)
+    | EI                              --Enable interrupts  (IME = 1)
  --Rotates & Shifts
     | RLCr Register                   --Rotate register left. Old bit 7 to carry flag
     | RLCHL                           --Rotate (HL) left. Old bit 7 to carry flag
@@ -131,7 +132,7 @@ module CPU
  --Returns
     | RET                             --Pop two bytes from stack, and jump to that address
     | RETcc FlagCondition             --RET if cc conditions are true (see specs)
-    | RETI                            --RET, then enable interrupts
+    | RETI                            --RET, then enable interrupts (IME = 1)
  --Helper Instructions
     | CBInstruction                   --Execute CB opcode instructions
     deriving Show
@@ -146,11 +147,16 @@ module CPU
 
  data Flag = FlagZ | FlagN | FlagH | FlagC deriving Show
  data Bit = Zero | One deriving (Enum, Show)
- data RestartAddress = R00 | R08 | R10 | R18 | R20 | R28 | R30 | R38 deriving Show
+
+ data RestartAddress = R00 | R08 | R10 | R18 | R20 | R28 | R30 | R38 | R40 | R48 | R50 | R58 | R60 deriving Show
 
  complementBit :: Bit -> Bit
  complementBit One  = Zero
  complementBit Zero = One
+
+ toBool :: Bit -> Bool
+ toBool Zero = False
+ toBool One  = True 
 
  getRestartAddress :: RestartAddress -> Word16
  getRestartAddress R00 = 0x0000
@@ -161,6 +167,12 @@ module CPU
  getRestartAddress R28 = 0x0028
  getRestartAddress R30 = 0x0030
  getRestartAddress R38 = 0x0038
+ getRestartAddress R40 = 0x0040
+ getRestartAddress R48 = 0x0048
+ getRestartAddress R50 = 0x0050
+ getRestartAddress R58 = 0x0058
+ getRestartAddress R60 = 0x0060
+ 
 
  data FlagCondition = CondNZ | CondZ | CondNC | CondC deriving Show
  
@@ -190,6 +202,7 @@ module CPU
  instance Num Bit where
    fromInteger = toBit
    (+) a b = toBit $ toInteger $ (fromEnum a) + (fromEnum b)
+   (-) a b = toBit $ toInteger $ (fromEnum a) - (fromEnum b)
    (*) a b = toBit $ toInteger $ (fromEnum a) * (fromEnum b)
    abs = toBit . toInteger . abs . fromEnum
    signum = toBit . toInteger . signum . fromEnum
@@ -234,6 +247,11 @@ module CPU
 
  getBit :: (Bits a, Num a) => a -> Int -> Bit
  getBit num i = toBit $ 0 /= ((bit i) .&. num) `shiftR` i
+
+ 
+
+ isBitSet :: (Bits a, Num a) => a -> Int -> Bool
+ isBitSet a = toBool <$> getBit a
 
  getFlagBit :: Emulator m => Flag -> m Bit
  getFlagBit flag = do
@@ -338,6 +356,52 @@ module CPU
  
 
  (.^.) = xor
+------------------
+
+ data Interrupt = VBlank | STAT | Timer | Serial | Joypad deriving (Show, Enum)
+
+ loadIF :: Emulator m => m MemVal
+ loadIF = load (MemAddr 0xFF0F)
+
+ storeIF :: Emulator m => Word8 -> m ()
+ storeIF w = store (MemAddr 0xFF0F) (MemVal8 w)
+
+ loadIE :: Emulator m => m MemVal
+ loadIE = load (MemAddr 0xFFFF)
+
+ storeIE :: Emulator m => Word8 -> m ()
+ storeIE w = store (MemAddr 0xFFFF) (MemVal8 w)
+ 
+ interrupts = [VBlank, STAT, Timer, Serial, Joypad]
+ interruptOffsets = [R40, R48, R50, R58, R60]
+
+ getInterrupts :: Word8 -> [Interrupt]
+ getInterrupts flags = filter (\a -> isBitSet flags (fromEnum a)) interrupts
+ 
+ processInterrupt :: Emulator m => Interrupt -> m ()
+ processInterrupt interrupt = do
+   executeInstruction DI
+   loadIF >>= \(MemVal8 val) -> storeIF (val `clearBit` (fromEnum interrupt)) --Unset corresponding bit in IF flag
+   executeInstruction $ RSTn $ interruptOffsets !! (fromEnum interrupt) --Execute interrupt handler code
+   
+   
+
+ handleInterrupts :: Emulator m => m ()
+ handleInterrupts = do
+   Flag ime <- load IME
+   when ime $ do
+     MemVal8 flagIF <- loadIF
+     MemVal8 flagIE <- loadIE
+     foldl (>>) (return ()) (processInterrupt <$> (getInterrupts $ flagIF.&.flagIE))
+       
+
+   
+         
+  
+
+
+
+
 ------------------
 
  streamNextInstruction :: Emulator m => m Instruction
@@ -906,9 +970,6 @@ module CPU
  decodeCBInstruction :: Emulator m => Opcode -> m Instruction
  decodeCBInstruction op = cbOpcodeLookups !! (fromIntegral op)
   
- 
-
-   
 
  executeInstruction :: Emulator m => Instruction -> m ()
  executeInstruction instr = case instr of
@@ -1147,10 +1208,10 @@ module CPU
                  (FlagC, One)]
 
    NOP  -> return ()
-   HALT -> return ()
-   STOP -> return ()
-   DI   -> return () --TODO
-   EI   -> return () --TODO
+   HALT -> return () --TODO
+   STOP -> return () --TODO
+   DI   -> store IME (Flag False)
+   EI   -> store IME (Flag True)
 
    RLCr reg -> do
      MemVal8 regVal <- load (OneRegister reg)
@@ -1368,8 +1429,8 @@ module CPU
      if toJump then executeInstruction RET else return ()
 
    RETI -> do
+     store IME (Flag True)
      executeInstruction RET
-     --TODO : Enable Interrupts
 
    CBInstruction -> do
      MemVal16 pc <- load PC

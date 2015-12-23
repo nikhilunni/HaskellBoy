@@ -7,7 +7,7 @@ module Memory
  import Data.Array.ST
  import Data.STRef
  import Data.Bits
-
+ 
  data Register =   A
                  | F
                  | B
@@ -23,16 +23,19 @@ module Memory
               | MemAddr Word16
               | SP
               | PC
+              | IME
               deriving (Show)
 
  data MemVal = MemVal8 Word8
              | MemVal16 Word16
+             | Flag Bool
               deriving (Show)
 
  data Memory s = Memory { memory :: STUArray s Word16 Word8
                         , registers :: STUArray s Word8 Word8
                         , sp :: STRef s Word16
                         , pc :: STRef s Word16
+                        , ime :: STRef s Bool --Interrupt Master Enable Flag 
                         }                          
 
 
@@ -40,26 +43,27 @@ module Memory
  new = do
    memory' <- newArray_ (0x0000, 0xFFFF)
    registers' <- newArray (0x0, 0x8) 0 --Fix this...
-   sp' <- newSTRef 0xFFFE
-   pc' <- newSTRef 0x0100
+   sp' <-  newSTRef 0xFFFE
+   pc' <-  newSTRef 0x0100
+   ime' <- newSTRef False
    return Memory { memory = memory'
                  , registers = registers'
                  , sp = sp'
                  , pc = pc'
+                 , ime = ime'
                  }
 
  regNum = fromIntegral . fromEnum
        
  read :: Memory s -> Address -> ST s MemVal
  read mem (OneRegister reg)       = readArray (registers mem) (regNum reg) >>= \n -> return $ MemVal8 n
- read mem (TwoRegister regA regB) =
-   do
-   a <- readArray (registers mem) (regNum regA)
-   b <- readArray (registers mem) (regNum regB)
-   return $ MemVal16 $ fromIntegral $ (a `shiftL` 8) + (b) 
+ read mem (TwoRegister regA regB) = do a <- readArray (registers mem) (regNum regA)
+                                       b <- readArray (registers mem) (regNum regB)
+                                       return $ MemVal16 $ fromIntegral $ (a `shiftL` 8) + (b)
  read mem (MemAddr ptr)           = readArray (memory mem) ptr >>= \n -> return $ MemVal8 n
- read mem SP                      = readSTRef (sp mem) >>= \n -> return $ MemVal16 n
- read mem PC                      = readSTRef (pc mem) >>= \n -> return $ MemVal16 n
+ read mem SP                      = readSTRef (sp mem)  >>= \n -> return $ MemVal16 n
+ read mem PC                      = readSTRef (pc mem)  >>= \n -> return $ MemVal16 n
+ read mem IME                     = readSTRef (ime mem) >>= \n -> return $ Flag n
 
 
 
@@ -72,3 +76,4 @@ module Memory
  write mem (MemAddr ptr) (MemVal8 w)            = writeArray (memory mem) ptr w
  write mem SP (MemVal16 w) = writeSTRef (sp mem) w
  write mem PC (MemVal16 w) = writeSTRef (pc mem) w
+ write mem IME (Flag w) = writeSTRef (ime mem) w

@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-} --Unsafe!
 
 module GBC
@@ -13,7 +14,7 @@ module GBC
  import Monad
  import Cartridge
 
- import CPU (streamNextInstruction, executeInstruction)
+ import CPU
 
  import System.Exit
  import System.IO 
@@ -43,17 +44,13 @@ module GBC
    store (OneRegister A) (MemVal8 2)
    load (OneRegister A)
 
- cpuLoop :: Emulator m => m ()
- cpuLoop = do
-   streamNextInstruction >>= executeInstruction
-   cpuLoop
-
  main :: IO ()
  main = do
-   cart <- readCartridge "../roms/blue.gb"
+   cart <- readCartridge "../roms/ttt.gb"
    runGBC $ do
      storeCartridge cart
      forever $ do       
        next <- streamNextInstruction
-       liftIO $ putStrLn $ show $ next     
+       liftIO $ putStrLn $ show $ next
        executeInstruction next
+       handleInterrupts
