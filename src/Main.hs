@@ -1,5 +1,17 @@
- main :: IO ()
- main = do
+import GBC
+
+main :: IO ()
+main = do
+  GBC.run
+
+
+
+
+
+
+
+
+{-   
    initializeAll
    window <- createWindow "My SDL Application" defaultWindow
    renderer <- createRenderer window (-1) defaultRenderer
@@ -20,3 +32,4 @@
    present renderer
    unless qPressed (appLoop renderer)
 
+-}

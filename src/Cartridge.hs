@@ -7,6 +7,7 @@ module Cartridge
  import Control.Applicative
  import Data.Word
 
+ import Types
  import Monad
  import Memory
 

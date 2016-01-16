@@ -1,7 +1,4 @@
-module CPU
-       (  streamNextInstruction, executeInstruction, handleInterrupts,
-          Bit
-       ) where
+module CPU where
 
  import Data.Word
  import Data.Either
@@ -14,11 +11,10 @@ module CPU
  import Control.Applicative
  import Control.Monad
 
+ import Types
  import Memory
  import Monad
 
-
- type Opcode = Word8
 
  data Instruction =
  {-See : http://marc.rawer.de/Gameboy/Docs/GBCPUman.pdf,
@@ -92,7 +88,7 @@ module CPU
     | CCF                             --Complement carry flag
     | SCF                             --Set carry flag
     | NOP                             --No operation
-    | HALT                            --Power down CPU until interrupt
+    | HALT_INSTR                      --Power down CPU until interrupt
     | STOP                            --Halt CPU & LCD until button pressed
     | DI                              --Disable interrupts (IME = 0)
     | EI                              --Enable interrupts  (IME = 1)
@@ -134,7 +130,7 @@ module CPU
     | RETcc FlagCondition             --RET if cc conditions are true (see specs)
     | RETI                            --RET, then enable interrupts (IME = 1)
  --Helper Instructions
-    | CBInstruction                   --Execute CB opcode instructions
+    | ERROR                           --Invalid instruction
     deriving Show
  
 --Helper Functions  
@@ -382,10 +378,10 @@ module CPU
  processInterrupt interrupt = do
    executeInstruction DI
    loadIF >>= \(MemVal8 val) -> storeIF (val `clearBit` (fromEnum interrupt)) --Unset corresponding bit in IF flag
+   store IME (Flag False) --Reset IME
    executeInstruction $ RSTn $ interruptOffsets !! (fromEnum interrupt) --Execute interrupt handler code
    
-   
-
+ --Need to reset IME after handling each interrupt... (is this happening with lazy evaluation?)
  handleInterrupts :: Emulator m => m ()
  handleInterrupts = do
    Flag ime <- load IME
@@ -393,26 +389,29 @@ module CPU
      MemVal8 flagIF <- loadIF
      MemVal8 flagIE <- loadIE
      foldl (>>) (return ()) (processInterrupt <$> (getInterrupts $ flagIF.&.flagIE))
-       
 
+
+ requestInterrupt :: Emulator m => Interrupt -> m ()
+ requestInterrupt interrupt = do
+   loadIF >>= \(MemVal8 val) -> storeIF (val `setBit` (fromEnum interrupt))
    
-         
-  
-
-
-
-
 ------------------
 
- streamNextInstruction :: Emulator m => m Instruction
+ streamNextInstruction :: Emulator m => m (Instruction, Cycles)
  streamNextInstruction = do
    MemVal16 pc <- load PC
-   store PC (MemVal16 $ pc + 1)
    MemVal8 next <- load (MemAddr pc)
-   decodeInstruction next
---   nextInstruction <- decodeInstruction next
---   executeInstruction nextInstruction
-
+   (if (next == 0xCB) then loadCBInstr else loadNormalInstr) pc next
+   
+  where loadNormalInstr pc next = do
+          store PC (MemVal16 $ pc + 1)
+          liftM2 (,) (decodeInstruction next)
+                     (return $ cycleLookup !! (fromIntegral next))
+        loadCBInstr pc next = do
+          MemVal8 suffix <- load (MemAddr $ pc + 1)
+          store PC (MemVal16 $ pc + 2)
+          liftM2 (,) (decodeCBInstruction suffix)
+                     (return $ cbCycleLookup !! (fromIntegral suffix))
 
  --TODO : Convert to immutable vector
  --See : http://imrannazar.com/Gameboy-Z80-Opcode-Map
@@ -542,7 +541,7 @@ module CPU
                   return $ LDHLr E,
                   return $ LDHLr H,
                   return $ LDHLr L,
-                  return HALT,
+                  return HALT_INSTR,
                   return $ LDHLr A,
                   return $ LDrr A B,
                   return $ LDrr A C,
@@ -632,7 +631,7 @@ module CPU
                   return $ RETcc CondZ,
                   return RET,
                   JPccnn CondZ <$> load16_imm,
-                  return $ CBInstruction,
+                  return ERROR,
                   CALLccnn CondZ <$> load16_imm,
                   CALLnn <$> load16_imm,
                   ADCn <$> load8_imm,
@@ -641,7 +640,7 @@ module CPU
                   return $ RETcc CondNC,                  --D
                   return $ POPrr D E,
                   JPccnn CondNC <$> load16_imm,
-                  return NOP,
+                  return ERROR,
                   CALLccnn CondNC <$> load16_imm,
                   return $ PUSHrr D E,
                   SUBn <$> load8_imm,
@@ -649,34 +648,34 @@ module CPU
                   return $ RETcc CondC,
                   return RETI,
                   JPccnn CondC <$> load16_imm,
-                  return NOP,
+                  return ERROR,
                   CALLccnn CondC <$> load16_imm,
-                  return NOP,
+                  return ERROR,
                   SBCn <$> load8_imm,
                   return $ RSTn R18,
 
                   LDnr `liftM` load8_imm `ap` (return A), --E
                   return $ POPrr H L,
                   return $ LDrr'' C A,
-                  return NOP,
-                  return NOP,
+                  return ERROR,
+                  return ERROR,
                   return $ PUSHrr H L,
                   ANDn <$> load8_imm,
                   return $ RSTn R20,
                   ADDSPn <$> load8_imm,
                   return JPHL,
                   LDnnr `liftM` load16_imm `ap` (return A),
-                  return NOP,
-                  return NOP,
-                  return NOP,
+                  return ERROR,
+                  return ERROR,
+                  return ERROR,
                   XORn <$> load8_imm,
                   return $ RSTn R28,
 
                   LDrn' A <$> load8_imm,                  --F
                   return $ POPrr A F,
-                  return NOP,
+                  return ERROR,
                   return DI,
-                  return NOP,
+                  return ERROR,
                   return $ PUSHrr A F,
                   ORn <$> load8_imm,
                   return $ RSTn R30,
@@ -684,8 +683,8 @@ module CPU
                   return LDSPHL,
                   LDrnn A <$> load16_imm,
                   return EI,
-                  return NOP,
-                  return NOP,
+                  return ERROR,
+                  return ERROR,
                   CPn <$> load8_imm,
                   return $ RSTn R38
                  ]
@@ -964,6 +963,43 @@ module CPU
                     return $ SETnr A 7                    
                     ]
 
+ cycleLookup :: [Cycles]
+ cycleLookup = [4,12,8,8,4,4,8,4,20,8,8,8,4,4,8,4,        --0
+                4,12,8,8,4,4,8,4,8,8,8,8,4,4,8,4,         --1
+                8,12,8,8,4,4,8,4,8,8,8,8,4,4,8,4,         --2
+                8,12,8,8,12,12,12,4,8,8,8,8,4,4,8,4,      --3
+                4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --4
+                4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --5
+                4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --6
+                8,8,8,8,8,8,4,8,4,4,4,4,4,4,8,4,          --7
+                4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --8
+                4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --9
+                4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --A
+                4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --B
+                8,12,12,12,12,16,8,32,8,8,12,0,12,12,8,32,--C
+                8,12,12,0,12,16,8,32,8,8,12,0,12,0,8,32,  --D
+                12,12,8,0,0,16,8,32,16,4,16,0,0,0,8,32,   --E
+                12,12,8,4,0,16,8,32,12,8,16,4,0,0,8,32]   --F
+
+
+ cbCycleLookup :: [Cycles]
+ cbCycleLookup = [8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --0
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --1
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --2
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --3
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --4
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --5
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --6
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --7
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --8
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --9
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --A
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --B
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --C
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --D
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --E
+                  8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8]      --F
+
  decodeInstruction :: Emulator m => Opcode -> m Instruction
  decodeInstruction op = opcodeLookups !! (fromIntegral op)
 
@@ -1208,7 +1244,7 @@ module CPU
                  (FlagC, One)]
 
    NOP  -> return ()
-   HALT -> return () --TODO
+   HALT_INSTR -> return () --TODO
    STOP -> return () --TODO
    DI   -> store IME (Flag False)
    EI   -> store IME (Flag True)
@@ -1388,17 +1424,18 @@ module CPU
 
    JRn imm -> do
      MemVal16 currAddr <- load PC
-     store PC (MemVal16 $ currAddr + fromIntegral imm)
+     store PC (MemVal16 $ currAddr + (fromIntegral imm) - 2)
      
    JRccn cond imm -> do
      MemVal16 currAddr <- load PC
      toJump <- testFlagCondition cond
-     if toJump then store PC (MemVal16 $ currAddr + fromIntegral imm) else return ()
+     let jumpAddr = (currAddr .&. 0xFF00) + (fromIntegral $ imm + (fromIntegral $ currAddr .&. 0x00FF))
+     if toJump then store PC (MemVal16 jumpAddr) else return ()
 
    CALLnn imm -> do
      MemVal16 sp <- load SP
      MemVal16 pc <- load PC
-     let nextInstrPC = pc + 3
+     let nextInstrPC = pc
      store (MemAddr $ (sp-1) .&. 0xFFFF) (MemVal8 $ fromIntegral $ nextInstrPC `shiftR` 8)
      store (MemAddr $ (sp-2) .&. 0xFFFF) (MemVal8 $ fromIntegral $ nextInstrPC .&. 0x00FF)
      store SP (MemVal16 $ sp - 2)
@@ -1408,11 +1445,11 @@ module CPU
      toJump <- testFlagCondition cond
      if toJump then executeInstruction $ CALLnn imm else return ()
 
-   RSTn rAddress -> do
+   RSTn rAddress -> do -- TODO -- Make sure "current address" is pc-2
      MemVal16 sp <- load SP
      MemVal16 pc <- load PC
-     store (MemAddr $ (sp-1) .&. 0xFFFF) (MemVal8 $ fromIntegral $ pc `shiftR` 8)
-     store (MemAddr $ (sp-2) .&. 0xFFFF) (MemVal8 $ fromIntegral $ pc .&. 0x00FF)
+     store (MemAddr $ (sp-1) .&. 0xFFFF) (MemVal8 $ fromIntegral $ (pc-2) `shiftR` 8)
+     store (MemAddr $ (sp-2) .&. 0xFFFF) (MemVal8 $ fromIntegral $ (pc-2) .&. 0x00FF)
      store SP (MemVal16 $ sp - 2)
      store PC (MemVal16 $ getRestartAddress rAddress)
 
@@ -1420,7 +1457,7 @@ module CPU
      MemVal16 sp <- load SP
      MemVal8 lowerByte <- load (MemAddr $ sp)
      MemVal8 upperByte <- load (MemAddr $ sp + 1)
-     let jumpAddr = ( (fromIntegral upperByte) `shiftR` 8 ) + (fromIntegral lowerByte)
+     let jumpAddr = ( (fromIntegral upperByte) `shiftL` 8 ) + (fromIntegral lowerByte)
      store SP (MemVal16 $ sp + 2)
      store PC (MemVal16 jumpAddr)
 
@@ -1432,9 +1469,4 @@ module CPU
      store IME (Flag True)
      executeInstruction RET
 
-   CBInstruction -> do
-     MemVal16 pc <- load PC
-     store PC (MemVal16 $ pc + 1)
-     MemVal8 next <- load (MemAddr pc)
-     nextInstruction <- decodeCBInstruction next
-     executeInstruction nextInstruction
+   ERROR -> emulationError "Invalid instruction"

@@ -1,57 +1,52 @@
 module Memory 
  where
-       
+
  import Control.Applicative
  import Control.Monad.ST
  import Data.Word
  import Data.Array.ST
  import Data.STRef
  import Data.Bits
- 
- data Register =   A
-                 | F
-                 | B
-                 | C
-                 | D
-                 | E
-                 | H
-                 | L
-                 deriving (Show, Enum)
 
- data Address = OneRegister Register
-              | TwoRegister {registerA :: Register, registerB :: Register} --Enforce pairings? (BC, DE, HL)
-              | MemAddr Word16
-              | SP
-              | PC
-              | IME
-              deriving (Show)
+ import TemplateMemory
+ import Types
 
- data MemVal = MemVal8 Word8
-             | MemVal16 Word16
-             | Flag Bool
-              deriving (Show)
+ import SDL
 
- data Memory s = Memory { memory :: STUArray s Word16 Word8
-                        , registers :: STUArray s Word8 Word8
-                        , sp :: STRef s Word16
-                        , pc :: STRef s Word16
-                        , ime :: STRef s Bool --Interrupt Master Enable Flag 
-                        }                          
-
-
- new :: ST s (Memory s)
- new = do
+ new :: Window -> Renderer -> ST s (Memory s)
+ new window' renderer' = do
    memory' <- newArray_ (0x0000, 0xFFFF)
+   vramBank' <- newArray_ (0x000, 0x400)
    registers' <- newArray (0x0, 0x8) 0 --Fix this...
    sp' <-  newSTRef 0xFFFE
    pc' <-  newSTRef 0x0100
+   cycles' <- newSTRef 0
    ime' <- newSTRef False
+   halt' <- newSTRef False
+   mode' <- newSTRef OAMSearch
+   line' <- newSTRef 0
+   transferred' <- newSTRef False
+   gpu_cycles' <- newSTRef 0
    return Memory { memory = memory'
+                 , vramBank = vramBank'
                  , registers = registers'
-                 , sp = sp'
-                 , pc = pc'
-                 , ime = ime'
+                 , memRefs = MemRefs { sp = sp'
+                                     , pc = pc'
+                                     , cycles = cycles'
+                                     , ime = ime'
+                                     , halt = halt'
+                                     , mode = mode'
+                                     , line = line'
+                                     , transferred = transferred'
+                                     , gpu_cycles = gpu_cycles'
+                                     }
+                 , window = window'
+                 , renderer = renderer'
                  }
+
+ build_address_type ''MemRefs
+ build_read_write ''MemRefs
+ 
 
  regNum = fromIntegral . fromEnum
        
@@ -61,10 +56,7 @@ module Memory
                                        b <- readArray (registers mem) (regNum regB)
                                        return $ MemVal16 $ fromIntegral $ (a `shiftL` 8) + (b)
  read mem (MemAddr ptr)           = readArray (memory mem) ptr >>= \n -> return $ MemVal8 n
- read mem SP                      = readSTRef (sp mem)  >>= \n -> return $ MemVal16 n
- read mem PC                      = readSTRef (pc mem)  >>= \n -> return $ MemVal16 n
- read mem IME                     = readSTRef (ime mem) >>= \n -> return $ Flag n
-
+ read mem other                   = readAccess mem other
 
 
  write :: Memory s -> Address -> MemVal -> ST s ()
@@ -73,7 +65,5 @@ module Memory
    do
    writeArray (registers mem) (regNum regA) $ fromIntegral (w `shiftR` 8)
    writeArray (registers mem) (regNum regB) $ fromIntegral (w .&. 0xFF)
- write mem (MemAddr ptr) (MemVal8 w)            = writeArray (memory mem) ptr w
- write mem SP (MemVal16 w) = writeSTRef (sp mem) w
- write mem PC (MemVal16 w) = writeSTRef (pc mem) w
- write mem IME (Flag w) = writeSTRef (ime mem) w
+ write mem (MemAddr ptr) (MemVal8 w)     = writeArray (memory mem) ptr w
+ write mem other val                     = writeAccess mem other val
