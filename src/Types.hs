@@ -25,13 +25,7 @@ module Types
                  | H
                  | L
                  deriving (Show, Enum)
-
-{-
- data Address = OneRegister Register
-              | TwoRegister {registerA :: Register, registerB :: Register}
-              | MemAddr Word16
-              deriving (Show)   
--}
+                          
  data MemVal = MemVal8 Word8
              | MemVal16 Word16
              | Flag Bool
@@ -42,14 +36,14 @@ module Types
 
 
  data Memory s = Memory { memory :: STUArray s Word16 Word8
-                        , vramBank :: STUArray s Word16 Word8                          
+                        , vramBank :: STUArray s Word16 Word8
+                        , bgp :: STUArray s 
                         , registers :: STUArray s Word8 Word8
                         , memRefs :: MemRefs s
                         , window :: Window
                         , renderer :: Renderer
                         }
-
-
+                 
  data MemRefs s = MemRefs { sp :: STRef s Word16
                           , pc :: STRef s Word16
                           , cycles :: STRef s Word16
@@ -59,6 +53,7 @@ module Types
                           , line :: STRef s Word8 -- GPU line
                           , transferred :: STRef s Bool --Have we done GPU scanline?
                           , gpu_cycles :: STRef s Word16 -- Internal cycle count for GPU
+                          , gbc_mode :: STRef s Bool --Are we in GBC mode?
                           }
 
 

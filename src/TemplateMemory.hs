@@ -1,3 +1,5 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module TemplateMemory
  where
 
@@ -21,12 +23,14 @@ module TemplateMemory
    let names = map (\(fieldName,_,_) -> mkName $ map toUpper (nameBase fieldName)) fields
    let type_list = map (\typeUpper -> NormalC typeUpper []) names
                    ++ [NormalC (mkName "OneRegister") [(NotStrict, regTyp)],
-                       NormalC (mkName "MemAddr") [(NotStrict, ConT $ mkName "Word16")],
+                       NormalC (mkName "MemAddr") [(NotStrict, wrdTyp)],
+                       NormalC (mkName "VRAMAddr") [(NotStrict, wrdTyp)],
                        RecC (mkName "TwoRegister") [(mkName "registerA", NotStrict, regTyp),
                                                     (mkName "registerB", NotStrict, regTyp)]
                       ]
    return [ DataD [] (mkName "Address") [] type_list [] ]
      where regTyp = ConT $ mkName "Register"
+           wrdTyp = ConT $ mkName "Word16"
        
  --Fix me!!!
  getRef :: Type -> Q Exp
