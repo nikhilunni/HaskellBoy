@@ -14,7 +14,7 @@ module Cartridge
  readCartridge :: FilePath -> IO [Word8]
  readCartridge fpath = C.unpack <$> C.readFile fpath
 
- storeCartridge :: (Emulator m) => [Word8] -> m ()
- storeCartridge ws = mapM_ (\(c,i) -> store (MemAddr i) (MemVal8 c)) $ zip ws [0..]
-
- 
+ storeCartridge :: [Word8] -> GBC ()
+ storeCartridge ws = do   
+   mapM_ (\(c,i) -> store (MemAddr i) (MemVal8 c)) $ zip ws [0..]
+   

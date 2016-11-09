@@ -134,7 +134,7 @@ module CPU where
     deriving Show
  
 --Helper Functions  
- ld :: Emulator m => Register -> Either Register Word8 -> m ()
+ ld :: Register -> Either Register Word8 -> GBC ()
  ld reg1 (Left reg2) = do
    a <- load $ OneRegister reg2
    store (OneRegister reg1) a
@@ -172,7 +172,7 @@ module CPU where
 
  data FlagCondition = CondNZ | CondZ | CondNC | CondC deriving Show
  
- testFlagCondition :: Emulator m => FlagCondition -> m Bool
+ testFlagCondition :: FlagCondition -> GBC Bool
  testFlagCondition CondNZ = do
    flagZ <- getFlagBit FlagZ
    return $ case flagZ of
@@ -235,7 +235,7 @@ module CPU where
    FlagH -> set fReg 5 bit
    FlagC -> set fReg 4 bit
 
- updateFlags :: (Emulator m) => [(Flag,Bit)] -> m ()
+ updateFlags :: [(Flag,Bit)] -> GBC ()
  updateFlags xs = do
    MemVal8 fReg <- load (OneRegister F)
    let newfReg = foldl (\acc (flag,bit) -> updateFlag flag (toBit bit) acc) fReg xs
@@ -249,7 +249,7 @@ module CPU where
  isBitSet :: (Bits a, Num a) => a -> Int -> Bool
  isBitSet a = toBool <$> getBit a
 
- getFlagBit :: Emulator m => Flag -> m Bit
+ getFlagBit :: Flag -> GBC Bit
  getFlagBit flag = do
    MemVal8 fReg <- load (OneRegister F)
    case flag of
@@ -260,7 +260,7 @@ module CPU where
 
 
  class ALUInput a where
-   loadInput :: Emulator m => a -> m Word8
+   loadInput :: a -> GBC Word8
 
  instance ALUInput Register where
    loadInput reg = do
@@ -298,7 +298,7 @@ module CPU where
 
  data ALUOp = PLUS|MINUS|AND|OR|XOR
 
- executeALUInstr :: (Emulator m, ALUInput a) => a -> ALUOp -> m ()
+ executeALUInstr :: ALUInput a => a -> ALUOp -> GBC ()
  executeALUInstr a optype = do
    input <- loadInput a
    MemVal8 aVal <- load (OneRegister A)
@@ -335,14 +335,13 @@ module CPU where
    
 
 
- load8_imm :: Emulator m => m Word8
+ load8_imm :: GBC Word8
  load8_imm = do
    MemVal16 pc <- load PC
-   store PC (MemVal16 $ pc+1)
    MemVal8 next8 <- load (MemAddr pc)
    return next8
               
- load16_imm :: Emulator m => m Word16
+ load16_imm :: GBC Word16
  load16_imm = do
    lower <- load8_imm
    upper <- load8_imm
@@ -356,25 +355,25 @@ module CPU where
 
  data Interrupt = VBlank | STAT | Timer | Serial | Joypad deriving (Show, Enum)
 
- loadIF :: Emulator m => m MemVal
+ loadIF :: GBC MemVal
  loadIF = load (MemAddr 0xFF0F)
 
- storeIF :: Emulator m => Word8 -> m ()
+ storeIF :: Word8 -> GBC ()
  storeIF w = store (MemAddr 0xFF0F) (MemVal8 w)
 
- loadIE :: Emulator m => m MemVal
+ loadIE :: GBC MemVal
  loadIE = load (MemAddr 0xFFFF)
 
- storeIE :: Emulator m => Word8 -> m ()
+ storeIE :: Word8 -> GBC ()
  storeIE w = store (MemAddr 0xFFFF) (MemVal8 w)
  
- interrupts = [VBlank, STAT, Timer, Serial, Joypad]
- interruptOffsets = [R40, R48, R50, R58, R60]
+ interrupts       = [VBlank, STAT, Timer, Serial, Joypad]
+ interruptOffsets = [R40,    R48,  R50,   R58,    R60]
 
  getInterrupts :: Word8 -> [Interrupt]
  getInterrupts flags = filter (\a -> isBitSet flags (fromEnum a)) interrupts
  
- processInterrupt :: Emulator m => Interrupt -> m ()
+ processInterrupt :: Interrupt -> GBC ()
  processInterrupt interrupt = do
    executeInstruction DI
    loadIF >>= \(MemVal8 val) -> storeIF (val `clearBit` (fromEnum interrupt)) --Unset corresponding bit in IF flag
@@ -382,40 +381,39 @@ module CPU where
    executeInstruction $ RSTn $ interruptOffsets !! (fromEnum interrupt) --Execute interrupt handler code
    
  --Need to reset IME after handling each interrupt... (is this happening with lazy evaluation?)
- handleInterrupts :: Emulator m => m ()
+ handleInterrupts :: GBC ()
  handleInterrupts = do
    Flag ime <- load IME
    when ime $ do
      MemVal8 flagIF <- loadIF
      MemVal8 flagIE <- loadIE
-     foldl (>>) (return ()) (processInterrupt <$> (getInterrupts $ flagIF.&.flagIE))
+     runList $ processInterrupt <$> (getInterrupts $ flagIF.&.flagIE)
 
 
- requestInterrupt :: Emulator m => Interrupt -> m ()
+ requestInterrupt :: Interrupt -> GBC ()
  requestInterrupt interrupt = do
    loadIF >>= \(MemVal8 val) -> storeIF (val `setBit` (fromEnum interrupt))
    
 ------------------
 
- streamNextInstruction :: Emulator m => m (Instruction, Cycles)
+ streamNextInstruction :: GBC (Instruction, Cycles)
  streamNextInstruction = do
    MemVal16 pc <- load PC
    MemVal8 next <- load (MemAddr pc)
-   (if (next == 0xCB) then loadCBInstr else loadNormalInstr) pc next
+   store PC (MemVal16 $ pc + (lengthLookup !! (fromIntegral next)))
+   (if (next == 0xCB) then loadCBInstr else loadNormalInstr) pc next   
    
   where loadNormalInstr pc next = do
-          store PC (MemVal16 $ pc + 1)
           liftM2 (,) (decodeInstruction next)
                      (return $ cycleLookup !! (fromIntegral next))
         loadCBInstr pc next = do
           MemVal8 suffix <- load (MemAddr $ pc + 1)
-          store PC (MemVal16 $ pc + 2)
           liftM2 (,) (decodeCBInstruction suffix)
                      (return $ cbCycleLookup !! (fromIntegral suffix))
 
  --TODO : Convert to immutable vector
  --See : http://imrannazar.com/Gameboy-Z80-Opcode-Map
- opcodeLookups :: Emulator m => [m Instruction]
+ opcodeLookups :: [GBC Instruction]
  opcodeLookups = [return NOP,                             --0
                   LDrrnn B C <$> load16_imm,
                   return $ LDBCr A,
@@ -689,7 +687,7 @@ module CPU where
                   return $ RSTn R38
                  ]
 
- cbOpcodeLookups :: Emulator m => [m Instruction]
+ cbOpcodeLookups :: [GBC Instruction]
  cbOpcodeLookups = [return $ RLCr B,                --0
                     return $ RLCr C,
                     return $ RLCr D,
@@ -1000,14 +998,31 @@ module CPU where
                   8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8,      --E
                   8,8,8,8,8,8,16,8,8,8,8,8,8,8,16,8]      --F
 
- decodeInstruction :: Emulator m => Opcode -> m Instruction
+ lengthLookup :: [Word16]
+ lengthLookup = [1,3,1,1,1,1,2,1,3,1,1,1,1,1,2,1,         --0
+                 2,3,1,1,1,1,2,1,2,1,1,1,1,1,2,1,         --1
+                 2,3,1,1,1,1,2,1,2,1,1,1,1,1,2,1,         --2
+                 2,3,1,1,1,1,2,1,2,1,1,1,1,1,2,1,         --3
+                 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,         --4
+                 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,         --5
+                 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,         --6
+                 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,         --7
+                 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,         --8
+                 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,         --9
+                 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,         --A
+                 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,         --B
+                 1,1,3,3,3,1,2,1,1,1,3,2,3,3,2,1,         --C
+                 1,1,3,1,3,1,2,1,1,1,3,1,3,1,2,1,         --D
+                 2,1,1,1,1,1,2,1,2,1,3,1,1,1,2,1,         --E
+                 2,1,1,1,1,1,2,1,2,1,3,1,1,1,2,1]         --F
+
+ decodeInstruction :: Opcode -> GBC Instruction
  decodeInstruction op = opcodeLookups !! (fromIntegral op)
 
- decodeCBInstruction :: Emulator m => Opcode -> m Instruction
+ decodeCBInstruction :: Opcode -> GBC Instruction
  decodeCBInstruction op = cbOpcodeLookups !! (fromIntegral op)
-  
 
- executeInstruction :: Emulator m => Instruction -> m ()
+ executeInstruction :: Instruction -> GBC ()
  executeInstruction instr = case instr of
 --8-bit loads   
    LDrn reg imm -> ld reg (Right imm)

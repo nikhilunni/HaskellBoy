@@ -24,12 +24,13 @@ module GPU
  scx_addr   = MemAddr 0xFF43
  ly_addr    = MemAddr 0xFF44
  lyc_addr   = MemAddr 0xFF45
+ bgp_addr   = MemAddr 0xFF47
  hdma5_addr = MemAddr 0xFF55
 
  screen_width  = 160
  screen_height = 144
  
- compareLY_LYC :: Emulator m => m ()  --TODO : Implement in memory access "rules" logic
+ compareLY_LYC :: GBC ()  --TODO : Implement in memory access "rules" logic
  compareLY_LYC = do
    MemVal8 ly <- load ly_addr
    MemVal8 lyc <- load lyc_addr
@@ -39,7 +40,7 @@ module GPU
      
      
  --TODO : Eliminate GPU_MODE memory altogether... just store in STAT (?)
- lcdModeSwitch :: Emulator m => GPUMode -> m ()
+ lcdModeSwitch :: GPUMode -> GBC ()
  lcdModeSwitch m = do
    store MODE (Mode m)
    MemVal8 stat <- load stat_addr
@@ -48,13 +49,13 @@ module GPU
      requestInterrupt STAT
 
 
- hdmaEnabled :: Emulator m => m Bool
+ hdmaEnabled :: GBC Bool
  hdmaEnabled = do
    MemVal8 hdma5 <- load hdma5_addr
    return $ hdma5 >= 128 --HDMA is enabled if the 7th bit is set (hdma5 `shiftL` 7 == 1)
    
  --Imperative af :-(
- tick :: Emulator m => Cycles -> m ()
+ tick :: Cycles -> GBC ()
  tick delta = do
    MemVal8 lineNum <- load LINE
    Mode scanMode <- load MODE
@@ -72,7 +73,7 @@ module GPU
          --TODO : HDMA transfer
          if (lineNum + 1 == 144)
            then do requestInterrupt VBlank
-                   lcdModeSwitch VBlankMode                   
+                   lcdModeSwitch VBlankMode
            else do lcdModeSwitch OAMSearch
                    
      VBlankMode -> do
@@ -102,25 +103,25 @@ module GPU
 
 
 
- scanLine :: Emulator m => Word8 -> m ()
+ scanLine :: Word8 -> GBC ()
  scanLine lineNum = do
    MemVal8 lcdc <- load lcdc_addr
    if (isBitSet lcdc 7)
       then renderLine lineNum
-      else return ()
+     else return ()
 
- renderLine :: Emulator m => Word8 -> m ()
+ renderLine :: Word8 -> GBC ()
  renderLine line = do
    renderBackground line
    renderWindow line
    renderSprites line
 
- 
- renderBackground :: Emulator m => Word8 -> m ()
+
+ renderBackground :: Word8 -> GBC ()
  renderBackground line = do
    MemVal8 lcdc <- load lcdc_addr
    Flag gbc <- load GBC_MODE
-   if (isBitSet lcdc 0)
+   if (isBitSet lcdc 0) --If BG display is enabled
       then do let (tileStart, offset) = if isBitSet lcdc 4 then (0x8000::Word16, 0) else (0x8800::Word16, 128)
               let bgStart = if isBitSet lcdc 3 then (0x9C00::Word16) else (0x9800::Word16)
               MemVal8 scy <- load scy_addr
@@ -139,34 +140,84 @@ module GPU
                                         (fromIntegral xTileOffset) + 20
               
               forM [tileAddrOffsetLower .. tileAddrOffsetUpper] $ \tileIdx -> do
-                MemVal8 tileAttr <- if gbc then (load $ VRAMAddr tileIdx) else (return $ MemVal8 0)                
+                MemVal8 tileAttr <- if gbc then (load $ VRAMAddr tileIdx) else (return $ MemVal8 0)
                 tileNum <- (\(MemVal8 a) -> a + offset) <$> (load $ MemAddr tileIdx)
 
                 let yByteOffset = 2 * (if isBitSet tileAttr 6 then (7 - (totalY `mod` 8)) else (totalY `mod` 8))
                 let finalTileAddr = (fromIntegral $ tileNum * 16) + tileStart + (fromIntegral yByteOffset)
                 let tile_bank = (if isBitSet tileAttr 3 then MemAddr else VRAMAddr)
                 MemVal8 lowerByte <- load $ tile_bank finalTileAddr
-                MemVal8 upperByte <- load $ tile_bank $ finalTileAddr + 1                
-                let pixelNums = (if isBitSet tileAttr 5 then reverse else id) $ getTilePixels lowerByte upperByte
-                renderBackgroundTile pixelNums tileAttr
+                MemVal8 upperByte <- load $ tile_bank $ finalTileAddr + 1
+                let pixelNums = (if isBitSet tileAttr 5 then reverse else id) $ getPixelNums lowerByte upperByte
+                let posX = [ fromIntegral ((tileIdx - tileAddrOffsetLower - 1) * 8 - fromIntegral scx) ..
+                             fromIntegral ((tileIdx - tileAddrOffsetLower) * 8 - 1 - fromIntegral scx) ]
+                pal <- (if gbc then (getGBCPalette $ tileAttr .&. 0x7) else (getGBPalette <$> unpackMemVal8 <$> load bgp_addr))
+                runList $ [renderPixel pal posX scy col | (posX,col) <- zip posX pixelNums]
               return ()
      else return ()
 
  --Lower byte represents LSB, upper byte represents MSB of each 8 pixels, with range [0 .. 3]
- getTilePixels :: Word8 -> Word8 -> [Word8]
- getTilePixels lowerByte upperByte = [(if lowerByte `testBit` i then 1 else 0) +
-                                (if upperByte `testBit` i then 2 else 0) | i <- [7,6 .. 0]]
+ getPixelNums :: Word8 -> Word8 -> [GBColor]
+ getPixelNums lowerByte upperByte = [toGBColor $ (if lowerByte `testBit` i then 1 else 0) +
+                                     (if upperByte `testBit` i then 2 else 0) | i <- [7,6 .. 0]]
 
+ toGBColor :: Word8 -> GBColor
+ toGBColor 0 = Col0
+ toGBColor 1 = Col1
+ toGBColor 2 = Col2
+ toGBColor 3 = Col3
 
- renderBackgroundTile :: Emulator m => [Word8] -> Word8 -> m ()
- renderBackgroundTile pixelNums tileAttr = do
-   let paletteNumber = (if tileAttr `testBit` 0 then 1 else 0) + (if tileAttr `testBit` 1 then 2 else 0)
-                       + (if tileAttr `testBit` 2 then 4 else 0)
+ renderPixel :: Palette -> Word8 -> Word8 -> GBColor -> GBC ()
+ renderPixel pal posx posy gbcol = drawPixel $ Pixel (getColor pal gbcol) (fromIntegral posx) (fromIntegral posy)
 
-
-
+ getColor :: Palette -> GBColor -> Color
+ getColor (col0,col1,col2,col3) pixelNum = case pixelNum of
+   Col0 -> col0
+   Col1 -> col1
+   Col2 -> col2
+   Col3 -> col3
  
+
+ getGBShade :: GBColor -> Color
+ getGBShade num = case num of
+   Col0 -> white
+   Col1 -> light_gray
+   Col2 -> dark_gray
+   Col3 -> black
    
+ getGBPalette :: Word8 -> Palette
+ getGBPalette pal = ((getGBShade col0), (getGBShade col1), (getGBShade col2), (getGBShade col3))
+   where col0 = toGBColor $ pal .&. 0x3
+         col1 = toGBColor $ (pal .&. 0xC) `shiftR` 2
+         col2 = toGBColor $ (pal .&. 0x30) `shiftR` 4
+         col3 = toGBColor $ (pal .&. 0xC0) `shiftR` 6
+
+
+
+ --Bit 0-4   : Red Intensity
+ --Bit 5-9   : Green Intensity
+ --Bit 10-14 : Blue Intensity
+ getGBCColor :: Word16 -> Color
+ getGBCColor num =  Color 0xFF --A
+                    (8 * (fromIntegral $ num .&. 0x1F)) --R
+                    (8 * (fromIntegral $ (num `shiftR` 5) .&. 0x1F)) --G
+                    (8 * (fromIntegral $ (num `shiftR` 10) .&. 0x1F)) --B
+
+ --TODO : Check for GBP #0-7, otherwise error ... right now you'll just get a runtime exception for index out of bound
+ getGBCPalette :: Word8 -> GBC Palette
+ getGBCPalette num = do
+     MemVal8 pal <- load $ PaletteAddr $ 8 * num
+     bytes <- getBytes <$> sequence [load $ PaletteAddr $ 8 * num + i | i <- [0 .. 7]]
+     let col0 = getGBCColor $ (fromIntegral $ ((bytes !! 0) `shiftL` 8)) + (fromIntegral $ (bytes !! 1))
+     let col1 = getGBCColor $ (fromIntegral $ ((bytes !! 2) `shiftL` 8)) + (fromIntegral $ (bytes !! 3))
+     let col2 = getGBCColor $ (fromIntegral $ ((bytes !! 4) `shiftL` 8)) + (fromIntegral $ (bytes !! 5))
+     let col3 = getGBCColor $ (fromIntegral $ ((bytes !! 6) `shiftL` 8)) + (fromIntegral $ (bytes !! 7))
+     return (col0, col1, col2, col3)
+   where getBytes [] = []
+         getBytes (MemVal8 x:xs) = x : (getBytes xs)
+
+ unpackMemVal8 :: MemVal -> Word8
+ unpackMemVal8 (MemVal8 x) = x
 
    
  renderWindow line = return ()

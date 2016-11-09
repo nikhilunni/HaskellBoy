@@ -25,6 +25,7 @@ module TemplateMemory
                    ++ [NormalC (mkName "OneRegister") [(NotStrict, regTyp)],
                        NormalC (mkName "MemAddr") [(NotStrict, wrdTyp)],
                        NormalC (mkName "VRAMAddr") [(NotStrict, wrdTyp)],
+                       NormalC (mkName "PaletteAddr") [(NotStrict, ConT $ mkName "Word8")],
                        RecC (mkName "TwoRegister") [(mkName "registerA", NotStrict, regTyp),
                                                     (mkName "registerB", NotStrict, regTyp)]
                       ]
