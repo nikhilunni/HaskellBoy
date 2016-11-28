@@ -1,3 +1,7 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TemplateHaskell #-}
+
 module Types
  where
 
@@ -10,12 +14,19 @@ module Types
 
  import Control.Monad
  import Control.Monad.ST
+ import Control.Monad.Reader
+ import Control.Monad.Trans
+
+ import Control.Lens
 
 
  import Language.Haskell.TH
 
  import SDL hiding (Palette)
 
+
+ newtype GBC a = GBC (ReaderT (Memory RealWorld) IO a)
+               deriving (Functor, Applicative, Monad, MonadIO)
 
  data Register = A
                | F
@@ -26,39 +37,34 @@ module Types
                | H
                | L
                deriving (Show, Enum)
-                          
- data MemVal = MemVal8 Word8
-             | MemVal16 Word16
-             | Flag Bool
-             | Mode GPUMode
-              deriving (Show)
+
+ eNum :: (Enum a, Num c) => a -> c
+ eNum = fromIntegral . fromEnum
 
  data GPUMode = HBlankMode | VBlankMode | OAMSearch | Transfer deriving (Enum, Show)
 
-
  data Memory s = Memory { memory :: STUArray s Word16 Word8
-                        , vramBank :: STUArray s Word16 Word8
                         , bgPalettes :: STArray s Word8 Word8
                         , registers :: STUArray s Word8 Word8
-                        , memRefs :: MemRefs s
+                        , romBanks  :: STUArray s (Word8,Word16) Word8
+                        , vramBank :: STUArray s Word16 Word8
+                        , wramBanks :: STUArray s (Word8,Word16) Word8
                         , window :: Window
                         , renderer :: Renderer
+                        , sp :: STRef s Word16
+                        , pc :: STRef s Word16
+                        , cycles :: STRef s Word16
+                        , ime :: STRef s Bool --Interrupt Master Enable Flag
+                        , halt :: STRef s Bool --Are we halted or not
+                        , mode :: STRef s GPUMode -- GPU mode
+                        , line :: STRef s Word8 -- GPU line
+                        , transferred :: STRef s Bool --Have we done GPU scanline?
+                        , gpu_cycles :: STRef s Word16 -- Internal cycle count for GPU
+                        , gbc_mode :: STRef s Bool --Are we in GBC mode?
                         }
-                 
- data MemRefs s = MemRefs { sp :: STRef s Word16
-                          , pc :: STRef s Word16
-                          , cycles :: STRef s Word16
-                          , ime :: STRef s Bool --Interrupt Master Enable Flag
-                          , halt :: STRef s Bool --Are we halted or not
-                          , mode :: STRef s GPUMode -- GPU mode
-                          , line :: STRef s Word8 -- GPU line
-                          , transferred :: STRef s Bool --Have we done GPU scanline?
-                          , gpu_cycles :: STRef s Word16 -- Internal cycle count for GPU
-                          , gbc_mode :: STRef s Bool --Are we in GBC mode?
-                          }
 
  data CartMode = DMGMode | GBCMode
- 
+
  data MBCType = MBC0
               | MBC1
               | MBC2
@@ -66,29 +72,6 @@ module Types
               | MBC4
               | MBC5
               | HuC1
-
-
---TODO : Convert from STArray to STUArray!
-
-{-
-instance MArray (STUArray s) Palette (ST s) where
-    {-# INLINE getBounds #-}
-    getBounds (STUArray l u _ _) = return (l,u)
-    {-# INLINE getNumElements #-}
-    getNumElements (STUArray _ _ n _) = return n
-    {-# INLINE unsafeNewArray_ #-}
-    unsafeNewArray_ (l,u) = unsafeNewArraySTUArray_ (l,u) (\(c1, c2, c3, c4) -> (c1) + (c2 `shiftL` 8) + (c3 `shiftL` 16) + (c4 `shiftL` 24))
-    {-# INLINE newArray_ #-}
-    newArray_ arrBounds = newArray arrBounds 0
-    {-# INLINE unsafeRead #-}
-    unsafeRead (STUArray _ _ _ marr#) (I# i#) = ST $ \s1# ->
-        case readWord8Array# marr# i# s1# of { (# s2#, e# #) ->
-        (# s2#, W8# e# #) }
-    {-# INLINE unsafeWrite #-}
-    unsafeWrite (STUArray _ _ _ marr#) (I# i#) (W8# e#) = ST $ \s1# ->
-        case writeWord8Array# marr# i# e# s1# of { s2# ->
-        (# s2#, () #) }
--}
 
  data Color = Color Word8 Word8 Word8 Word8 deriving Show --A/R/G/B
  data Pixel = Pixel Color Integer Integer deriving Show -- Color/X/Y
@@ -108,5 +91,5 @@ instance MArray (STUArray s) Palette (ST s) where
  snd3 (_,b,_) = b
  thd3 (_,_,c) = c
 
- 
- 
+ lift8 :: GBC Word8 -> GBC Word16
+ lift8 = fmap ((+0xFF00) . fromIntegral)

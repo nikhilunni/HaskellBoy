@@ -10,11 +10,11 @@ module Cartridge
  import Types
  import Monad
  import Memory
+ import MemoryRules
 
  readCartridge :: FilePath -> IO [Word8]
  readCartridge fpath = C.unpack <$> C.readFile fpath
 
  storeCartridge :: [Word8] -> GBC ()
- storeCartridge ws = do   
-   mapM_ (\(c,i) -> store (MemAddr i) (MemVal8 c)) $ zip ws [0..]
-   
+ storeCartridge ws = do
+   mapM_ (\(c,i) -> writeMem i c) $ zip ws [0..]

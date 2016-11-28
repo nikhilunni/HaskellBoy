@@ -1,25 +1,31 @@
 {-# LANGUAGE TemplateHaskell #-}
 
-module Memory 
+module Memory
  where
- import Control.Applicative
+
+ import Control.Monad
+ import Control.Monad.Reader
  import Control.Monad.ST
+ import Control.Monad.Trans
+ import Control.Applicative
+
  import Data.Word
  import Data.Array.ST
  import Data.STRef
  import Data.Bits
 
- import TemplateMemory
  import Types
 
  import SDL hiding (Palette)
 
- new :: Window -> Renderer -> ST s (Memory s)
- new window' renderer' = do
+ new :: Window -> Renderer -> Bool -> Word8 -> ST s (Memory s)
+ new window' renderer' gbcMode numRomBanks = do
    memory' <- newArray_ (0x0000, 0xFFFF)
-   vramBank' <- newArray_ (0x8000, 0x9FFF)
    bgPalettes' <- newArray_ (0x0, 0x3F)
-   registers' <- newArray (0x0, 0x8) 0 --TODO : 0x0, 0x7... right?
+   registers' <- newArray (0x0, 0x7) 0
+   romBanks' <- newArray_ ((1,0x4000), (numRomBanks-1, 0x7FFF))
+   vramBank' <- newArray_ (0x8000, 0x9FFF)
+   wramBanks' <- newArray_ ((1,0xD000), (7,0xDFFF))
    sp' <-  newSTRef 0xFFFE
    pc' <-  newSTRef 0x0000
    cycles' <- newSTRef 0
@@ -29,55 +35,77 @@ module Memory
    line' <- newSTRef 0
    transferred' <- newSTRef False
    gpu_cycles' <- newSTRef 0
-   gbc_mode' <- newSTRef True
+   gbc_mode' <- newSTRef gbcMode
    return Memory { memory = memory'
-                 , vramBank = vramBank'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
-                 , memRefs = MemRefs { sp = sp'
-                                     , pc = pc'
-                                     , cycles = cycles'
-                                     , ime = ime'
-                                     , halt = halt'
-                                     , mode = mode'
-                                     , line = line'
-                                     , transferred = transferred'
-                                     , gpu_cycles = gpu_cycles'
-                                     , gbc_mode = gbc_mode'
-                                     }
+                 , romBanks = romBanks'
+                 , vramBank = vramBank'
+                 , wramBanks = wramBanks'
+                 , sp = sp'
+                 , pc = pc'
+                 , cycles = cycles'
+                 , ime = ime'
+                 , halt = halt'
+                 , mode = mode'
+                 , line = line'
+                 , transferred = transferred'
+                 , gpu_cycles = gpu_cycles'
+                 , gbc_mode = gbc_mode'
                  , window = window'
                  , renderer = renderer'
                  }
 
- build_address_type ''MemRefs
- build_read_write ''MemRefs
- 
+ readArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> GBC Word8
+ readArr accessor i = GBC $ do
+   arr <- asks accessor
+   lift $ stToIO $ readArray arr i
 
- regNum = fromIntegral . fromEnum
-       
- read :: Memory s -> Address -> ST s MemVal
- read mem (OneRegister reg)       = readArray (registers mem) (regNum reg) >>= \n -> return $ MemVal8 n
- read mem (TwoRegister regA regB) = do a <- readArray (registers mem) (regNum regA)
-                                       b <- readArray (registers mem) (regNum regB)
-                                       return $ MemVal16 $ fromIntegral $ (a `shiftL` 8) + (b)
- read mem (MemAddr ptr)           = readArray (memory mem) ptr >>= \n -> return $ MemVal8 n
- read mem (VRAMAddr ptr)          = readArray (vramBank mem) ptr >>= \n -> return $ MemVal8 n
- read mem (PaletteAddr ptr)       = readArray (bgPalettes mem) ptr >>= \n -> return $ MemVal8 n
- read mem other                   = readAccess mem other
+ writeArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> Word8 -> GBC ()
+ writeArr accessor i val = GBC $ do
+   arr <- asks accessor
+   lift $ stToIO $ writeArray arr i val
 
+ readRef :: (Memory RealWorld -> STRef RealWorld e) -> GBC e
+ readRef accessor = GBC $ do
+   ref <- asks accessor
+   lift $ stToIO $ readSTRef ref
 
- write :: Memory s -> Address -> MemVal -> ST s ()
- write mem (OneRegister reg) (MemVal8 w)        = writeArray (registers mem) (regNum reg) w
- write mem (TwoRegister regA regB) (MemVal16 w) = do
-   writeArray (registers mem) (regNum regA) $ fromIntegral (w `shiftR` 8)
-   writeArray (registers mem) (regNum regB) $ fromIntegral (w .&. 0xFF)
- write mem (MemAddr ptr) (MemVal8 w)            = writeArray (memory mem) ptr w
- write mem (VRAMAddr ptr) (MemVal8 w)           = writeArray (vramBank mem) ptr w
- write mem (PaletteAddr ptr) (MemVal8 w)        = writeArray (bgPalettes mem) ptr w
- write mem other val                            = writeAccess mem other val
+ writeRef :: (Memory RealWorld -> STRef RealWorld e) -> e -> GBC ()
+ writeRef accessor val = GBC $ do
+   ref <- asks accessor
+   lift $ stToIO $ writeSTRef ref val
+
+ readReg :: Register -> GBC Word8
+ readReg reg = readArr registers $ eNum reg
+
+ writeReg :: Register -> Word8 -> GBC ()
+ writeReg reg val = writeArr registers (eNum reg) val
+
+ --TODO : Is there a better way to constrain the pairings?
+ readReg2 :: Register -> Register -> GBC Word16
+ readReg2 A F = readR A F
+ readReg2 B C = readR B C
+ readReg2 D E = readR D E
+ readReg2 H L = readR H L
+
+ readR reg1 reg2 = do
+   a <- readArr registers (eNum reg1)
+   b <- readArr registers (eNum reg2)
+   return $ fromIntegral $ (a `shiftL` 8) + b
+
+ writeReg2 :: Register -> Register -> Word16 -> GBC ()
+ writeReg2 A F = writeR A F
+ writeReg2 B C = writeR B C
+ writeReg2 D E = writeR D E
+ writeReg2 H L = writeR H L
+
+ writeR reg1 reg2 val = do
+   writeArr registers (eNum reg1) (fromIntegral $ val `shiftR` 8)
+   writeArr registers (eNum reg2) (fromIntegral $ val .&. 0xFF)
 
  boot_rom :: [Word8]
- boot_rom = [0x31, 0xfe, 0xff, 0xaf, 0x21, 0xff, 0x9f, 0x32, 0xcb, 0x7c, 0x20, 0xfb, 
+ boot_rom = [0x31, 0xfe, 0xff, 0xaf, 0x21, 0xff, 0x9f, 0x32, 0xcb, 0x7c, 0x20, 0xfb,
              0x21, 0x26, 0xff, 0x0e, 0x11, 0x3e, 0x80, 0x32, 0xe2, 0x0c, 0x3e, 0xf3,
              0xe2, 0x32, 0x3e, 0x77, 0x77, 0x3e, 0xfc, 0xe0, 0x47, 0x11, 0x04, 0x01,
              0x21, 0x10, 0x80, 0x1a, 0xcd, 0x95, 0x00, 0xcd, 0x96, 0x00, 0x13, 0x7b,
@@ -90,7 +118,7 @@ module Memory
              0x28, 0x06, 0x1e, 0xc1, 0xfe, 0x64, 0x20, 0x06, 0x7b, 0xe2, 0x0c, 0x3e,
              0x87, 0xe2, 0xf0, 0x42, 0x90, 0xe0, 0x42, 0x15, 0x20, 0xd2, 0x05, 0x20,
              0x4f, 0x16, 0x20, 0x18, 0xcb, 0x4f, 0x06, 0x04, 0xc5, 0xcb, 0x11, 0x17,
-             0xc1, 0xcb, 0x11, 0x17, 0x05, 0x20, 0xf5, 0x22, 0x23, 0x22, 0x23, 0xc9, 
+             0xc1, 0xcb, 0x11, 0x17, 0x05, 0x20, 0xf5, 0x22, 0x23, 0x22, 0x23, 0xc9,
              0xce, 0xed, 0x66, 0x66, 0xcc, 0x0d, 0x00, 0x0b, 0x03, 0x73, 0x00, 0x83,
              0x00, 0x0c, 0x00, 0x0d, 0x00, 0x08, 0x11, 0x1f, 0x88, 0x89, 0x00, 0x0e,
              0xdc, 0xcc, 0x6e, 0xe6, 0xdd, 0xdd, 0xd9, 0x99, 0xbb, 0xbb, 0x67, 0x63,

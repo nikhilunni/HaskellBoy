@@ -12,6 +12,8 @@ module GBC
  import Control.Monad.Trans
  import Control.Applicative
 
+ import Control.Lens
+
  import Data.Word (Word8, Word16)
  import Data.STRef
 
@@ -24,7 +26,7 @@ module GBC
 -- import MemoryRules
 
  import SDL
- 
+
  import Linear (V4(..), V2(..))
  import Linear.Affine
 
@@ -35,7 +37,7 @@ module GBC
 
  tick :: Cycles -> GBC ()
  tick n = do
-   load GPU_CYCLES >>= \(MemVal16 cycles) -> store GPU_CYCLES (MemVal16 $ cycles + n)
+   readRef gpu_cycles >>= \cycles -> writeRef gpu_cycles $ cycles + n
    GPU.tick n
 
 
@@ -50,24 +52,24 @@ module GBC
                                     , windowInitialSize  = V2 (fromIntegral screen_width)
                                                            (fromIntegral screen_height)
                                     }
-     
+
  runGBC :: GBC a -> IO a
  runGBC (GBC reader) = do
    initializeAll
    window' <- createWindow "HaskellBoy" defaultWindowConfig
    renderer' <- createRenderer window' (-1) defaultRenderer
-   mem <- stToIO $ Memory.new window' renderer'
+   mem <- stToIO $ Memory.new window' renderer' True 0
    runReaderT reader mem
 
  run :: IO ()
  run = do
-   --cart <- readCartridge "../roms/blue.gb"
+   cart <- readCartridge "../roms/blue.gb"
    runGBC $ do
      storeCartridge Memory.boot_rom
      forever $ do
-       MemVal16 pc <- load PC       
+       pcVal <- readRef pc
        (next, cycles) <- streamNextInstruction
-       printM $ (show next) ++ ", " ++ (show cycles) ++ ", " ++ (show pc)
+       printM $ (show next) ++ ", " ++ (show cycles) ++ ", " ++ (show pcVal)
        executeInstruction next
        GBC.tick cycles
        handleInterrupts
