@@ -48,11 +48,18 @@ module MemoryRules
        writeArr memory i b) [0x0000..0x00FF]
      writeRef bootRomActive False
    writeArr memory 0xFF50 val
+ writeMemMapped 0xFF04 _ = do -- DIV: any write resets to 0
+   writeArr memory 0xFF04 0
+   writeRef divCounter 0
+   writeRef timerCounter 0
  writeMemMapped 0xFF02 val = do
    writeArr memory 0xFF02 val
    when (val == 0x81) $ do -- Transfer start + internal clock
      ch <- readArr memory 0xFF01
-     liftIO $ hPutChar stderr (toEnum $ fromIntegral ch)
+     let c = toEnum $ fromIntegral ch
+     buf <- readRef serialBuffer
+     writeRef serialBuffer (buf ++ [c])
+     liftIO $ hPutChar stderr c
      liftIO $ hFlush stderr
  writeMemMapped addr val
    -- MBC1: ROM bank select (0x2000-0x3FFF)

@@ -43,6 +43,7 @@ module Types
                         , pc :: STRef s Word16
                         , cycles :: STRef s Word16
                         , ime :: STRef s Bool --Interrupt Master Enable Flag
+                        , imePending :: STRef s Bool --EI delayed enable
                         , halt :: STRef s Bool --Are we halted or not
                         , mode :: STRef s GPUMode -- GPU mode
                         , line :: STRef s Word8 -- GPU line
@@ -56,6 +57,10 @@ module Types
                         , framebuffer :: STUArray s Int Word8
                         , screenshotDir :: STRef s (Maybe FilePath)
                         , testMode :: STRef s Bool --Flat 64K access for CPU tests
+                        , headless :: STRef s Bool --Skip SDL rendering
+                        , serialBuffer :: STRef s String --Accumulated serial output
+                        , timerCounter :: STRef s Word16 --Internal timer cycle counter
+                        , divCounter :: STRef s Word16 --Internal DIV cycle counter
                         }
 
  data CartMode = DMGMode | GBCMode

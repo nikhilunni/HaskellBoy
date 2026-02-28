@@ -53,3 +53,16 @@ test-suite cpu-tests
     filepath,
     array,
     mtl
+
+test-suite rom-tests
+  type:             exitcode-stdio-1.0
+  main-is:          RomTest.hs
+  hs-source-dirs:   test
+  default-language: Haskell2010
+  ghc-options:      -Wall -Wno-unused-do-bind -Wno-missing-signatures -Wno-name-shadowing -O2
+  build-depends:
+    base       >= 4.18 && < 5,
+    haskellboy,
+    tasty,
+    tasty-hunit,
+    directory

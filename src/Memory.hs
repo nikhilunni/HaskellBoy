@@ -25,6 +25,7 @@ module Memory
    pc' <-  newSTRef 0x0000
    cycles' <- newSTRef 0
    ime' <- newSTRef False
+   imePending' <- newSTRef False
    halt' <- newSTRef False
    mode' <- newSTRef OAMSearch
    line' <- newSTRef 0
@@ -38,6 +39,10 @@ module Memory
    framebuffer' <- newArray (0, 160*144*3 - 1) 0
    screenshotDir' <- newSTRef Nothing
    testMode' <- newSTRef False
+   headless' <- newSTRef False
+   serialBuffer' <- newSTRef []
+   timerCounter' <- newSTRef 0
+   divCounter' <- newSTRef 0
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -48,6 +53,7 @@ module Memory
                  , pc = pc'
                  , cycles = cycles'
                  , ime = ime'
+                 , imePending = imePending'
                  , halt = halt'
                  , mode = mode'
                  , line = line'
@@ -63,6 +69,10 @@ module Memory
                  , framebuffer = framebuffer'
                  , screenshotDir = screenshotDir'
                  , testMode = testMode'
+                 , headless = headless'
+                 , serialBuffer = serialBuffer'
+                 , timerCounter = timerCounter'
+                 , divCounter = divCounter'
                  }
 
  readArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> GBC Word8
@@ -89,6 +99,7 @@ module Memory
  readReg reg = readArr registers $ eNum reg
 
  writeReg :: Register -> Word8 -> GBC ()
+ writeReg F val = writeArr registers (eNum F) (val .&. 0xF0)
  writeReg reg val = writeArr registers (eNum reg) val
 
  --TODO : Is there a better way to constrain the pairings?
@@ -112,8 +123,8 @@ module Memory
 
  writeR :: Register -> Register -> Word16 -> GBC ()
  writeR reg1 reg2 val = do
-   writeArr registers (eNum reg1) (fromIntegral $ val `shiftR` 8)
-   writeArr registers (eNum reg2) (fromIntegral $ val .&. 0xFF)
+   writeReg reg1 (fromIntegral $ val `shiftR` 8)
+   writeReg reg2 (fromIntegral $ val .&. 0xFF)
 
  boot_rom :: [Word8]
  boot_rom = [0x31, 0xfe, 0xff, 0xaf, 0x21, 0xff, 0x9f, 0x32, 0xcb, 0x7c, 0x20, 0xfb,
@@ -151,6 +162,7 @@ module Memory
    pc' <- newSTRef 0x0000
    cycles' <- newSTRef 0
    ime' <- newSTRef False
+   imePending' <- newSTRef False
    halt' <- newSTRef False
    mode' <- newSTRef OAMSearch
    line' <- newSTRef 0
@@ -164,6 +176,10 @@ module Memory
    framebuffer' <- newArray (0, 160*144*3 - 1) 0
    screenshotDir' <- newSTRef Nothing
    testMode' <- newSTRef True
+   headless' <- newSTRef False
+   serialBuffer' <- newSTRef []
+   timerCounter' <- newSTRef 0
+   divCounter' <- newSTRef 0
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -174,6 +190,7 @@ module Memory
                  , pc = pc'
                  , cycles = cycles'
                  , ime = ime'
+                 , imePending = imePending'
                  , halt = halt'
                  , mode = mode'
                  , line = line'
@@ -189,4 +206,70 @@ module Memory
                  , framebuffer = framebuffer'
                  , screenshotDir = screenshotDir'
                  , testMode = testMode'
+                 , headless = headless'
+                 , serialBuffer = serialBuffer'
+                 , timerCounter = timerCounter'
+                 , divCounter = divCounter'
+                 }
+
+ newHeadless :: Word8 -> IO (Memory RealWorld)
+ newHeadless numRomBanks = stToIO $ do
+   memory' <- newArray_ (0x0000, 0xFFFF)
+   bgPalettes' <- newArray_ (0x0, 0x3F)
+   registers' <- newArray (0x0, 0x7) 0
+   romBanks' <- newArray_ ((1,0x4000), (numRomBanks-1, 0x7FFF))
+   vramBank' <- newArray_ (0x8000, 0x9FFF)
+   wramBanks' <- newArray_ ((1,0xD000), (7,0xDFFF))
+   sp' <- newSTRef 0xFFFE
+   pc' <- newSTRef 0x0000
+   cycles' <- newSTRef 0
+   ime' <- newSTRef False
+   imePending' <- newSTRef False
+   halt' <- newSTRef False
+   mode' <- newSTRef OAMSearch
+   line' <- newSTRef 0
+   transferred' <- newSTRef False
+   gpu_cycles' <- newSTRef 0
+   gbc_mode' <- newSTRef False
+   bootRomActive' <- newSTRef False
+   cartFirstPage' <- newArray (0x0000, 0x00FF) 0
+   traceEnabled' <- newSTRef False
+   romBank' <- newSTRef 1
+   framebuffer' <- newArray (0, 160*144*3 - 1) 0
+   screenshotDir' <- newSTRef Nothing
+   testMode' <- newSTRef False
+   headless' <- newSTRef True
+   serialBuffer' <- newSTRef []
+   timerCounter' <- newSTRef 0
+   divCounter' <- newSTRef 0
+   return Memory { memory = memory'
+                 , bgPalettes = bgPalettes'
+                 , registers = registers'
+                 , romBanks = romBanks'
+                 , vramBank = vramBank'
+                 , wramBanks = wramBanks'
+                 , sp = sp'
+                 , pc = pc'
+                 , cycles = cycles'
+                 , ime = ime'
+                 , imePending = imePending'
+                 , halt = halt'
+                 , mode = mode'
+                 , line = line'
+                 , transferred = transferred'
+                 , gpu_cycles = gpu_cycles'
+                 , gbc_mode = gbc_mode'
+                 , window = error "newHeadless: window not available"
+                 , renderer = error "newHeadless: renderer not available"
+                 , bootRomActive = bootRomActive'
+                 , cartFirstPage = cartFirstPage'
+                 , traceEnabled = traceEnabled'
+                 , romBank = romBank'
+                 , framebuffer = framebuffer'
+                 , screenshotDir = screenshotDir'
+                 , testMode = testMode'
+                 , headless = headless'
+                 , serialBuffer = serialBuffer'
+                 , timerCounter = timerCounter'
+                 , divCounter = divCounter'
                  }

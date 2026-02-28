@@ -12,6 +12,37 @@ module GPU
  import CPU
 
 
+ tickTimer :: Cycles -> GBC ()
+ tickTimer delta = do
+   -- DIV register: increments every 256 T-cycles
+   divCnt <- readRef divCounter
+   let newDiv = divCnt + delta
+   when (newDiv >= 256) $ do
+     div' <- readMem 0xFF04
+     writeArr memory 0xFF04 (div' + 1)
+   writeRef divCounter (newDiv `mod` 256)
+   -- TIMA timer
+   tac <- readMem 0xFF07
+   when (testBit tac 2) $ do
+     let period = case tac .&. 0x03 of
+                    0 -> 1024
+                    1 -> 16
+                    2 -> 64
+                    _ -> 256
+     cnt <- readRef timerCounter
+     let newCnt = cnt + delta
+     if newCnt >= period
+       then do
+         writeRef timerCounter (newCnt - period)
+         tima <- readMem 0xFF05
+         if tima == 0xFF
+           then do
+             tma <- readMem 0xFF06
+             writeMem 0xFF05 tma
+             requestInterrupt Timer
+           else writeMem 0xFF05 (tima + 1)
+       else writeRef timerCounter newCnt
+
  screen_width :: Int
  screen_width  = 160
 
@@ -43,6 +74,7 @@ module GPU
  --Imperative af :-(
  tick :: Cycles -> GBC ()
  tick delta = do
+   tickTimer delta
    lineNum <- readRef line
    scanMode <- readRef mode
    counter <- readRef gpu_cycles

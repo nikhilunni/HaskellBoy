@@ -90,6 +90,11 @@ module CPU where
     | STOP                            --Halt CPU & LCD until button pressed
     | DI                              --Disable interrupts (IME = 0)
     | EI                              --Enable interrupts  (IME = 1)
+ --Unprefixed rotates (Z always 0)
+    | RLCA_instr                      --Rotate A left, old bit 7 to carry
+    | RRCA_instr                      --Rotate A right, old bit 0 to carry
+    | RLA_instr                       --Rotate A left through carry
+    | RRA_instr                       --Rotate A right through carry
  --Rotates & Shifts
     | RLCr Register                   --Rotate register left. Old bit 7 to carry flag
     | RLCHL                           --Rotate (HL) left. Old bit 7 to carry flag
@@ -227,14 +232,88 @@ module CPU where
  updateFlags [] = return ()
  updateFlags ((f,b):xs) = updateFlag f b >> updateFlags xs
 
- executeALUInstr :: (Word8 -> Word8 -> Word8) -> Word8 -> GBC ()
- executeALUInstr op val = do
+ addA :: Word8 -> GBC ()
+ addA val = do
    aVal <- readReg A
-   let newVal = op aVal val
-   updateFlags [(FlagZ, toBit $ newVal == 0),
+   let a16 = fromIntegral aVal :: Word16
+       v16 = fromIntegral val :: Word16
+       result16 = a16 + v16
+       result = fromIntegral result16 :: Word8
+   writeReg A result
+   updateFlags [(FlagZ, toBit $ result == 0),
                 (FlagN, Zero),
-                (FlagH, toBit $ newVal .&. 0x0F < aVal .&. 0x0F),
-                (FlagC, toBit $ val < aVal)]
+                (FlagH, toBit $ (a16 .&. 0xF) + (v16 .&. 0xF) > 0xF),
+                (FlagC, toBit $ result16 > 0xFF)]
+
+ adcA :: Word8 -> GBC ()
+ adcA val = do
+   aVal <- readReg A
+   carryBit <- getFlagBit FlagC
+   let c = fromIntegral (fromEnum carryBit) :: Word16
+       a16 = fromIntegral aVal :: Word16
+       v16 = fromIntegral val :: Word16
+       result16 = a16 + v16 + c
+       result = fromIntegral result16 :: Word8
+   writeReg A result
+   updateFlags [(FlagZ, toBit $ result == 0),
+                (FlagN, Zero),
+                (FlagH, toBit $ (a16 .&. 0xF) + (v16 .&. 0xF) + c > 0xF),
+                (FlagC, toBit $ result16 > 0xFF)]
+
+ subA :: Word8 -> GBC ()
+ subA val = do
+   aVal <- readReg A
+   let result = aVal - val
+   writeReg A result
+   updateFlags [(FlagZ, toBit $ result == 0),
+                (FlagN, One),
+                (FlagH, toBit $ (aVal .&. 0xF) < (val .&. 0xF)),
+                (FlagC, toBit $ aVal < val)]
+
+ sbcA :: Word8 -> GBC ()
+ sbcA val = do
+   aVal <- readReg A
+   carryBit <- getFlagBit FlagC
+   let c = fromIntegral (fromEnum carryBit) :: Word16
+       a16 = fromIntegral aVal :: Word16
+       v16 = fromIntegral val :: Word16
+       result16 = a16 - v16 - c
+       result = fromIntegral result16 :: Word8
+   writeReg A result
+   updateFlags [(FlagZ, toBit $ result == 0),
+                (FlagN, One),
+                (FlagH, toBit $ (a16 .&. 0xF) < (v16 .&. 0xF) + c),
+                (FlagC, toBit $ a16 < v16 + c)]
+
+ andA :: Word8 -> GBC ()
+ andA val = do
+   aVal <- readReg A
+   let result = aVal .&. val
+   writeReg A result
+   updateFlags [(FlagZ, toBit $ result == 0),
+                (FlagN, Zero),
+                (FlagH, One),
+                (FlagC, Zero)]
+
+ orA :: Word8 -> GBC ()
+ orA val = do
+   aVal <- readReg A
+   let result = aVal .|. val
+   writeReg A result
+   updateFlags [(FlagZ, toBit $ result == 0),
+                (FlagN, Zero),
+                (FlagH, Zero),
+                (FlagC, Zero)]
+
+ xorA :: Word8 -> GBC ()
+ xorA val = do
+   aVal <- readReg A
+   let result = aVal `xor` val
+   writeReg A result
+   updateFlags [(FlagZ, toBit $ result == 0),
+                (FlagN, Zero),
+                (FlagH, Zero),
+                (FlagC, Zero)]
 
  getBit :: (Bits a, Num a) => a -> Int -> Bit
  getBit num i = toBit $ 0 /= ((bit i) .&. num) `shiftR` i
@@ -298,10 +377,12 @@ module CPU where
  --Need to reset IME after handling each interrupt
  handleInterrupts :: GBC ()
  handleInterrupts = do
+   flagIF <- loadIF
+   flagIE <- loadIE
+   let pending = flagIF .&. flagIE
+   when (pending /= 0) $ writeRef halt False
    whenM (readRef ime) $ do
-     flagIF <- loadIF
-     flagIE <- loadIE
-     sequence_ $ processInterrupt <$> (getInterrupts $ flagIF.&.flagIE)
+     sequence_ $ processInterrupt <$> (getInterrupts pending)
 
 
  requestInterrupt :: Interrupt -> GBC ()
@@ -333,7 +414,7 @@ module CPU where
                   return $ INCr B,
                   return $ DECr B,
                   LDrn B <$> load8_imm,
-                  return $ RLCr A,
+                  return RLCA_instr,
                   LDnnSP <$> load16_imm,
                   return $ ADDHLrr B C,
                   return $ LDrBC A,
@@ -341,7 +422,7 @@ module CPU where
                   return $ INCr C,
                   return $ DECr C,
                   LDrn C <$> load8_imm,
-                  return $ RRCr A,
+                  return RRCA_instr,
 
                   return $ STOP,                          --1
                   LDrrnn D E <$> load16_imm,
@@ -350,7 +431,7 @@ module CPU where
                   return $ INCr D,
                   return $ DECr D,
                   LDrn D <$> load8_imm,
-                  return $ RLr A,
+                  return RLA_instr,
                   JRn <$> load8_imm,
                   return $ ADDHLrr D E,
                   return $ LDrDE A,
@@ -358,7 +439,7 @@ module CPU where
                   return $ INCr E,
                   return $ DECr E,
                   LDrn E <$> load8_imm,
-                  return $ RRr A,
+                  return RRA_instr,
 
                   JRccn CondNZ <$> load8_imm,             --2
                   LDrrnn H L <$> load16_imm,
@@ -973,8 +1054,15 @@ module CPU where
    LDSPnn imm16 -> writeRef sp imm16
    LDSPHL -> readReg2 H L >>= writeRef sp
    LDHLSPn imm -> do
-     spval <- readRef sp
-     writeReg2 H L $ spval + (fromIntegral imm)
+     spVal <- readRef sp
+     let imm16 = fromIntegral imm :: Word16
+         offset = fromIntegral (fromIntegral imm :: Int8) :: Word16
+         result = spVal + offset
+     writeReg2 H L result
+     updateFlags [(FlagZ, Zero),
+                  (FlagN, Zero),
+                  (FlagH, toBit $ (spVal .&. 0x0F) + (imm16 .&. 0x0F) > 0x0F),
+                  (FlagC, toBit $ (spVal .&. 0xFF) + imm16 > 0xFF)]
    LDnnSP imm16 -> do
      spVal <- readRef sp
      writeMem imm16 (fromIntegral $ spVal .&. 0xFF)
@@ -991,27 +1079,27 @@ module CPU where
      writeReg2 reg1 reg2 $ ((fromIntegral left) `shiftL` 8) .|. (fromIntegral right)
      writeRef sp $ spVal + 2
 --8-bit ALU
-   ADDr reg -> executeALUInstr (+)   =<< (readReg reg)
-   ADDn imm -> executeALUInstr (+)   imm
-   ADDHL    -> executeALUInstr (+)   =<< (readReg2 H L >>= readMem)
-   ADCr reg -> executeALUInstr (+)   =<< (liftM2 (+) (readReg reg) (eNum <$> (getFlagBit FlagC)))
-   ADCn imm -> executeALUInstr (+)   =<< (liftM (+ imm) (eNum <$> (getFlagBit FlagC)) )
-   ADCHL    -> executeALUInstr (+)   =<< (liftM2 (+) (readReg2 H L >>= readMem) (eNum <$> (getFlagBit FlagC)))
-   SUBr reg -> executeALUInstr (-)   =<< (readReg reg)
-   SUBn imm -> executeALUInstr (-)   imm
-   SUBHL    -> executeALUInstr (-)   =<< (readReg2 H L >>= readMem)
-   SBCr reg -> executeALUInstr (-)   =<< (liftM2 (+) (readReg reg) (eNum <$> (getFlagBit FlagC)))
-   SBCn imm -> executeALUInstr (-)   =<< (liftM (+ imm) (eNum <$> (getFlagBit FlagC)) )
-   SBCHL    -> executeALUInstr (-)   =<< (liftM2 (+) (readReg2 H L >>= readMem) (eNum <$> (getFlagBit FlagC)))
-   ANDr reg -> executeALUInstr (.&.) =<< (readReg reg)
-   ANDn imm -> executeALUInstr (.&.) imm
-   ANDHL    -> executeALUInstr (.&.) =<< (readReg2 H L >>= readMem)
-   ORr reg  -> executeALUInstr (.|.) =<< (readReg reg)
-   ORn imm  -> executeALUInstr (.|.) imm
-   ORHL     -> executeALUInstr (.|.) =<< (readReg2 H L >>= readMem)
-   XORr reg -> executeALUInstr (.^.) =<< (readReg reg)
-   XORn imm -> executeALUInstr (.^.) imm
-   XORHL    -> executeALUInstr (.^.) =<< (readReg2 H L >>= readMem)
+   ADDr reg -> addA =<< readReg reg
+   ADDn imm -> addA imm
+   ADDHL    -> addA =<< (readReg2 H L >>= readMem)
+   ADCr reg -> adcA =<< readReg reg
+   ADCn imm -> adcA imm
+   ADCHL    -> adcA =<< (readReg2 H L >>= readMem)
+   SUBr reg -> subA =<< readReg reg
+   SUBn imm -> subA imm
+   SUBHL    -> subA =<< (readReg2 H L >>= readMem)
+   SBCr reg -> sbcA =<< readReg reg
+   SBCn imm -> sbcA imm
+   SBCHL    -> sbcA =<< (readReg2 H L >>= readMem)
+   ANDr reg -> andA =<< readReg reg
+   ANDn imm -> andA imm
+   ANDHL    -> andA =<< (readReg2 H L >>= readMem)
+   ORr reg  -> orA =<< readReg reg
+   ORn imm  -> orA imm
+   ORHL     -> orA =<< (readReg2 H L >>= readMem)
+   XORr reg -> xorA =<< readReg reg
+   XORn imm -> xorA imm
+   XORHL    -> xorA =<< (readReg2 H L >>= readMem)
    CPr reg -> do
      aVal <- readReg A
      regVal <- readReg reg
@@ -1063,7 +1151,7 @@ module CPU where
      let diff = mem - 1
      writeMem hl diff
      updateFlags [(FlagZ, toBit $ diff == 0),
-                  (FlagN, Zero),
+                  (FlagN, One),
                   (FlagH, toBit $ diff .&. 0x0F > mem .&. 0x0F)]
    ADDHLrr reg1 reg2 -> do
      regVal <- readReg2 reg1 reg2
@@ -1083,11 +1171,14 @@ module CPU where
                   (FlagC, toBit $ sum < hlVal)]
    ADDSPn imm -> do
      spVal <- readRef sp
-     let sum = spVal + (fromIntegral imm)
+     let imm16 = fromIntegral imm :: Word16
+         offset = fromIntegral (fromIntegral imm :: Int8) :: Word16
+         result = spVal + offset
+     writeRef sp result
      updateFlags [(FlagZ, Zero),
                   (FlagN, Zero),
-                  (FlagH, toBit $ sum .&. 0x0FFF < spVal .&. 0x0FFF),
-                  (FlagC, toBit $ sum < spVal)]
+                  (FlagH, toBit $ (spVal .&. 0x0F) + (imm16 .&. 0x0F) > 0x0F),
+                  (FlagC, toBit $ (spVal .&. 0xFF) + imm16 > 0xFF)]
    INCrr reg1 reg2 -> fmap (+1) (readReg2 reg1 reg2) >>= writeReg2 reg1 reg2
    INCSP -> fmap (+1) (readRef sp) >>= writeRef sp
    DECrr reg1 reg2 -> fmap (flip (-) 1) (readReg2 reg1 reg2) >>= writeReg2 reg1 reg2
@@ -1114,23 +1205,21 @@ module CPU where
      flagH <- toBool <$> getFlagBit FlagH
      flagC <- toBool <$> getFlagBit FlagC
      flagN <- toBool <$> getFlagBit FlagN
-     if (not flagN) then do
-       when (flagC || regA > 0x99) $ do
-         writeReg A (regA + 0x60)
-         updateFlag FlagC One
-       when (flagH || (regA .&. 0xF) > 0x9) $ do
-         writeReg A (regA + 0x06)
-         updateFlag FlagH Zero
-     else if (flagH && flagC) then do
-       writeReg A (regA + 0x9A)
-       updateFlag FlagH Zero
-     else if (flagC) then do
-       writeReg A (regA + 0xA0)
-     else if (flagH) then do
-       writeReg A (regA + 0xFA)
-       updateFlag FlagH Zero
-     else return ()
-     updateFlag FlagZ $ regA == 0
+     if not flagN then do
+       let correction = (if flagC || regA > 0x99 then 0x60 else 0x00)
+                       + (if flagH || (regA .&. 0x0F) > 0x09 then 0x06 else 0x00)
+           result = regA + correction
+       writeReg A result
+       updateFlags [(FlagZ, toBit $ result == 0),
+                    (FlagH, Zero),
+                    (FlagC, if flagC || regA > 0x99 then One else Zero)]
+     else do
+       let correction = (if flagC then 0x60 else 0x00)
+                       + (if flagH then 0x06 else 0x00)
+           result = regA - correction
+       writeReg A result
+       updateFlags [(FlagZ, toBit $ result == 0),
+                    (FlagH, Zero)]
    CPL -> do
      aVal <- readReg A
      writeReg A $ complement aVal
@@ -1146,10 +1235,44 @@ module CPU where
                  (FlagH, Zero),
                  (FlagC, One)]
    NOP  -> return ()
-   HALT_INSTR -> return () --TODO
+   HALT_INSTR -> writeRef halt True
    STOP -> return () --TODO
    DI   -> writeRef ime False
-   EI   -> writeRef ime True
+   EI   -> writeRef imePending True
+   RLCA_instr -> do
+     regVal <- readReg A
+     let out = regVal `rotateL` 1
+     writeReg A out
+     updateFlags[(FlagZ, Zero),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 7)]
+   RRCA_instr -> do
+     regVal <- readReg A
+     let out = regVal `rotateR` 1
+     writeReg A out
+     updateFlags[(FlagZ, Zero),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 0)]
+   RLA_instr -> do
+     regVal <- readReg A
+     carryBit <- getFlagBit FlagC
+     let out = (regVal `shiftL` 1) .|. (fromIntegral $ fromEnum carryBit)
+     writeReg A out
+     updateFlags[(FlagZ, Zero),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 7)]
+   RRA_instr -> do
+     regVal <- readReg A
+     carryBit <- getFlagBit FlagC
+     let out = (regVal `shiftR` 1) .|. ((fromIntegral $ fromEnum carryBit) `shiftL` 7)
+     writeReg A out
+     updateFlags[(FlagZ, Zero),
+                 (FlagN, Zero),
+                 (FlagH, Zero),
+                 (FlagC, getBit regVal 0)]
    RLCr reg -> do
      regVal <- readReg reg
      let out = regVal `rotateL` 1
@@ -1170,7 +1293,7 @@ module CPU where
    RLr reg -> do
      regVal <- readReg reg
      carryBit <- getFlagBit FlagC
-     let out = (regVal `rotateL` 1) + (fromIntegral $ fromEnum carryBit)
+     let out = (regVal `shiftL` 1) .|. (fromIntegral $ fromEnum carryBit)
      writeReg reg out
      updateFlags[(FlagZ, toBit $ out == 0),
                  (FlagN, Zero),
@@ -1180,7 +1303,7 @@ module CPU where
      hl <- readReg2 H L
      mem <- readMem hl
      carryBit <- getFlagBit FlagC
-     let out = (mem `rotateL` 1) + (fromIntegral $ fromEnum carryBit)
+     let out = (mem `shiftL` 1) .|. (fromIntegral $ fromEnum carryBit)
      writeMem hl out
      updateFlags[(FlagZ, toBit $ out == 0),
                  (FlagN, Zero),
@@ -1206,7 +1329,7 @@ module CPU where
    RRr reg -> do
      regVal <- readReg reg
      carryBit <- getFlagBit FlagC
-     let out = (regVal `rotateR` 1) + (fromIntegral $ fromEnum carryBit)
+     let out = (regVal `shiftR` 1) .|. ((fromIntegral $ fromEnum carryBit) `shiftL` 7)
      writeReg reg out
      updateFlags[(FlagZ, toBit $ out == 0),
                  (FlagN, Zero),
@@ -1216,7 +1339,7 @@ module CPU where
      hl <- readReg2 H L
      mem <- readMem hl
      carryBit <- getFlagBit FlagC
-     let out = (mem `rotateR` 1) + (fromIntegral $ fromEnum carryBit)
+     let out = (mem `shiftR` 1) .|. ((fromIntegral $ fromEnum carryBit) `shiftL` 7)
      writeMem hl out
      updateFlags[(FlagZ, toBit $ out == 0),
                  (FlagN, Zero),
@@ -1276,13 +1399,13 @@ module CPU where
                  (FlagC, getBit mem 0)]
    BITnr reg imm -> do
      regVal <- readReg reg
-     updateFlags[(FlagZ, toBit $ testBit regVal (fromIntegral imm) ),
+     updateFlags[(FlagZ, toBit $ not $ testBit regVal (fromIntegral imm) ),
                  (FlagN, Zero),
                  (FlagH, One)]
    BITnHL imm -> do
      hl <- readReg2 H L
      mem <- readMem hl
-     updateFlags[(FlagZ, toBit $ testBit mem (fromIntegral imm) ),
+     updateFlags[(FlagZ, toBit $ not $ testBit mem (fromIntegral imm) ),
                  (FlagN, Zero),
                  (FlagH, One)]
    SETnr reg imm -> do
@@ -1322,11 +1445,11 @@ module CPU where
    CALLccnn cond imm -> do
      toJump <- testFlagCondition cond
      if toJump then executeInstruction $ CALLnn imm else return ()
-   RSTn rAddress -> do -- TODO -- Make sure "current address" is pc-2
+   RSTn rAddress -> do
      spVal <- readRef sp
      pcVal <- readRef pc
-     writeMem (spVal-1) (fromIntegral $ (pcVal-2) `shiftR` 8)
-     writeMem (spVal-2) (fromIntegral $ (pcVal-2) .&. 0x00FF)
+     writeMem ((spVal-1) .&. 0xFFFF) (fromIntegral $ pcVal `shiftR` 8)
+     writeMem ((spVal-2) .&. 0xFFFF) (fromIntegral $ pcVal .&. 0x00FF)
      writeRef sp $ spVal - 2
      writeRef pc $ getRestartAddress rAddress
    RET -> do

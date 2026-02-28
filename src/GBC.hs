@@ -8,6 +8,7 @@ module GBC
  import Control.Monad.ST
 
  import Data.Word
+ import Data.IORef
  import Numeric (showHex)
 
  import System.IO (hPutStrLn, stderr)
@@ -89,11 +90,58 @@ module GBC
      showScreen
      pollSDLEvents
      forever $ do
-       tracing <- readRef traceEnabled
-       pcVal <- readRef pc
-       (next, cycles) <- streamNextInstruction
-       when tracing $
-         liftIO $ hPutStrLn stderr $ "PC=" ++ showHex16 pcVal ++ " " ++ show next
-       executeInstruction next
-       GBC.tick cycles
-       handleInterrupts
+       -- Apply pending IME from previous EI instruction
+       pending <- readRef imePending
+       when pending $ do
+         writeRef ime True
+         writeRef imePending False
+       halted <- readRef halt
+       if halted
+         then do
+           GBC.tick 4
+           handleInterrupts
+         else do
+           tracing <- readRef traceEnabled
+           pcVal <- readRef pc
+           (next, cycles) <- streamNextInstruction
+           when tracing $
+             liftIO $ hPutStrLn stderr $ "PC=" ++ showHex16 pcVal ++ " " ++ show next
+           executeInstruction next
+           GBC.tick cycles
+           handleInterrupts
+
+ runGBCHeadless :: Word8 -> GBC a -> IO a
+ runGBCHeadless numBanks (GBC reader) = do
+   mem <- Memory.newHeadless numBanks
+   runReaderT reader mem
+
+ runRomHeadless :: FilePath -> Word64 -> IO String
+ runRomHeadless romPath maxCycles = do
+   cart <- readCartridge romPath
+   let numBanks = romBankCount cart
+   runGBCHeadless numBanks $ do
+     storeCartridge cart
+     postBootState
+     cycleRef <- liftIO $ newIORef (0 :: Word64)
+     let loop = do
+           pending <- readRef imePending
+           when pending $ do
+             writeRef ime True
+             writeRef imePending False
+           halted <- readRef halt
+           if halted
+             then do
+               -- When halted, just tick 4 cycles and check interrupts
+               GBC.tick 4
+               handleInterrupts
+               liftIO $ modifyIORef' cycleRef (+4)
+             else do
+               (next, cycles') <- streamNextInstruction
+               executeInstruction next
+               GBC.tick cycles'
+               handleInterrupts
+               liftIO $ modifyIORef' cycleRef (+ fromIntegral cycles')
+           n <- liftIO $ readIORef cycleRef
+           when (n < maxCycles) loop
+     loop
+     readRef serialBuffer
