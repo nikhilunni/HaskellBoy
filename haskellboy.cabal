@@ -1,0 +1,55 @@
+cabal-version:  2.4
+name:           haskellboy
+version:        0.1.0.0
+synopsis:       A Game Boy Color emulator written in Haskell
+license:        MIT
+build-type:     Simple
+
+library
+  hs-source-dirs:   src
+  default-language: Haskell2010
+  ghc-options:      -Wall -Wno-unused-do-bind -Wno-missing-signatures -Wno-name-shadowing
+  exposed-modules:
+    Types
+    Memory
+    MemoryRules
+    Monad
+    CPU
+    GPU
+    Cartridge
+    GBC
+  build-depends:
+    base       >= 4.18 && < 5,
+    sdl2       >= 2.5,
+    bytestring >= 0.11,
+    array      >= 0.5,
+    mtl        >= 2.3,
+    cond       >= 0.5,
+    linear     >= 1.22
+
+executable haskellboy
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  default-language: Haskell2010
+  ghc-options:      -Wall -Wno-unused-do-bind -Wno-missing-signatures -Wno-name-shadowing
+  build-depends:
+    base       >= 4.18 && < 5,
+    haskellboy
+
+test-suite cpu-tests
+  type:             exitcode-stdio-1.0
+  main-is:          CPUTest.hs
+  hs-source-dirs:   test
+  default-language: Haskell2010
+  ghc-options:      -Wall -Wno-unused-do-bind -Wno-missing-signatures -Wno-name-shadowing
+  build-depends:
+    base       >= 4.18 && < 5,
+    haskellboy,
+    tasty,
+    tasty-hunit,
+    aeson,
+    bytestring,
+    directory,
+    filepath,
+    array,
+    mtl

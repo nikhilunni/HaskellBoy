@@ -1,15 +1,8 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 module GPU
  where
 
- import Control.Applicative
  import Control.Monad
- import Control.Monad.ST
- import Control.Monad.Trans
  import Data.Word
- import Data.Array.ST
- import Data.STRef
  import Data.Bits
 
  import Types
@@ -19,7 +12,10 @@ module GPU
  import CPU
 
 
+ screen_width :: Int
  screen_width  = 160
+
+ screen_height :: Int
  screen_height = 144
 
  compareLY_LYC :: GBC ()  --TODO : Implement in memory access "rules" logic
@@ -64,6 +60,12 @@ module GPU
          if (lineNum + 1 == 144)
            then do requestInterrupt VBlank
                    lcdModeSwitch VBlankMode
+                   showScreen
+                   pollSDLEvents
+                   dir <- readRef screenshotDir
+                   case dir of
+                     Just d  -> captureScreenshot (d ++ "/screenshot.bmp")
+                     Nothing -> return ()
            else do lcdModeSwitch OAMSearch
 
      VBlankMode -> do
@@ -134,15 +136,15 @@ module GPU
                 tileNum <- (+ offset) <$> (readMem tileIdx)
 
                 let yByteOffset = 2 * (if isBitSet tileAttr 6 then (7 - (totalY `mod` 8)) else (totalY `mod` 8))
-                let finalTileAddr = (fromIntegral $ tileNum * 16) + tileStart + (fromIntegral yByteOffset)
-                let tile_bank = (if isBitSet tileAttr 3 then memory else vramBank)
+                let finalTileAddr = (fromIntegral tileNum * 16) + tileStart + (fromIntegral yByteOffset)
+                let tile_bank = (if isBitSet tileAttr 3 then vramBank else memory)
                 lowerByte <- readArr tile_bank finalTileAddr --Fix this to use MemoryRules
                 upperByte <- readArr tile_bank $ finalTileAddr + 1
                 let pixelNums = (if isBitSet tileAttr 5 then reverse else id) $ getPixelNums lowerByte upperByte
-                let posX = [ fromIntegral ((tileIdx - tileAddrOffsetLower - 1) * 8 - fromIntegral scx) ..
+                let posXs = [ fromIntegral ((tileIdx - tileAddrOffsetLower - 1) * 8 - fromIntegral scx) ..
                              fromIntegral ((tileIdx - tileAddrOffsetLower) * 8 - 1 - fromIntegral scx) ]
                 pal <- (if gbc then (getGBCPalette $ tileAttr .&. 0x7) else (getGBPalette <$> readMem bgp_addr))
-                sequence_ $ [renderPixel pal posX scy col | (posX,col) <- zip posX pixelNums]
+                sequence_ $ [renderPixel pal px line col | (px,col) <- zip posXs pixelNums]
               return ()
      else return ()
 
@@ -202,13 +204,28 @@ module GPU
      let col3 = getGBCColor $ (fromIntegral $ ((bytes !! 6) `shiftL` 8)) + (fromIntegral $ (bytes !! 7))
      return (col0, col1, col2, col3)
 
+ lcdc_addr :: Word16
  lcdc_addr  = 0xFF40
+
+ stat_addr :: Word16
  stat_addr  = 0xFF41
+
+ scy_addr :: Word16
  scy_addr   = 0xFF42
+
+ scx_addr :: Word16
  scx_addr   = 0xFF43
+
+ ly_addr :: Word16
  ly_addr    = 0xFF44
+
+ lyc_addr :: Word16
  lyc_addr   = 0xFF45
+
+ bgp_addr :: Word16
  bgp_addr   = 0xFF47
+
+ hdma5_addr :: Word16
  hdma5_addr = 0xFF55
 
  renderWindow line = return ()

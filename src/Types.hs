@@ -1,26 +1,14 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TemplateHaskell #-}
 
 module Types
  where
 
  import Data.Word
- import Data.Bits
- import Data.Char
  import Data.Array.ST
  import Data.STRef
- import Data.Either
 
- import Control.Monad
- import Control.Monad.ST
+ import Control.Monad.ST (RealWorld)
  import Control.Monad.Reader
- import Control.Monad.Trans
-
- import Control.Lens
-
-
- import Language.Haskell.TH
 
  import SDL hiding (Palette)
 
@@ -61,6 +49,13 @@ module Types
                         , transferred :: STRef s Bool --Have we done GPU scanline?
                         , gpu_cycles :: STRef s Word16 -- Internal cycle count for GPU
                         , gbc_mode :: STRef s Bool --Are we in GBC mode?
+                        , bootRomActive :: STRef s Bool --Is boot ROM overlaid?
+                        , cartFirstPage :: STUArray s Word16 Word8 --Saved cartridge 0x00-0xFF
+                        , traceEnabled :: STRef s Bool --Instruction tracing
+                        , romBank :: STRef s Word8 --Current switchable ROM bank
+                        , framebuffer :: STUArray s Int Word8
+                        , screenshotDir :: STRef s (Maybe FilePath)
+                        , testMode :: STRef s Bool --Flat 64K access for CPU tests
                         }
 
  data CartMode = DMGMode | GBCMode
@@ -78,17 +73,29 @@ module Types
  type Palette = (Color, Color, Color, Color) --Color 0,1,2,3
  data GBColor = Col0 | Col1 | Col2 | Col3
 
+ white :: Color
  white      = Color 0xFF 0xFF 0xFF 0xFF
+
+ light_gray :: Color
  light_gray = Color 0xFF 0xE0 0xE0 0xE0
+
+ dark_gray :: Color
  dark_gray  = Color 0xFF 0x66 0x66 0x66
+
+ black :: Color
  black      = Color 0xFF 0x00 0x00 0x00
 
  type Opcode = Word8
  type Cycles = Word16
  type LineNum = Word8
 
+ fst3 :: (a, b, c) -> a
  fst3 (a,_,_) = a
+
+ snd3 :: (a, b, c) -> b
  snd3 (_,b,_) = b
+
+ thd3 :: (a, b, c) -> c
  thd3 (_,_,c) = c
 
  lift8 :: GBC Word8 -> GBC Word16

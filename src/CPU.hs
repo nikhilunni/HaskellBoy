@@ -1,14 +1,11 @@
 module CPU where
 
  import Data.Word
- import Data.Either
+ import Data.Int (Int8)
  import Data.Bits ( (.&.) , (.|.), clearBit, setBit, bit, xor,
                     shiftL, shiftR, rotateR, rotateL, Bits, complement,
                     testBit)
- import Data.Bool
- import Data.Vector (Vector, fromList, (!))
 
- import Control.Applicative
  import Control.Conditional hiding (when)
  import Control.Monad
 
@@ -130,6 +127,11 @@ module CPU where
     | RET                             --Pop two bytes from stack, and jump to that address
     | RETcc FlagCondition             --RET if cc conditions are true (see specs)
     | RETI                            --RET, then enable interrupts (IME = 1)
+ --HL auto-increment/decrement loads
+    | LDIA                            --LD (HL+),A : write A to (HL), then HL++
+    | LDAI                            --LD A,(HL+) : read (HL) into A, then HL++
+    | LDDA                            --LD (HL-),A : write A to (HL), then HL--
+    | LDAD                            --LD A,(HL-) : read (HL) into A, then HL--
  --Helper Instructions
     | ERROR                           --Invalid instruction
     deriving Show
@@ -250,7 +252,11 @@ module CPU where
      FlagC -> return $ getBit fReg 4
 
  load8_imm :: GBC Word8
- load8_imm = readRef pc >>= readMem
+ load8_imm = do
+   pcVal <- readRef pc
+   val <- readMem pcVal
+   writeRef pc (pcVal + 1)
+   return val
 
  load16_imm :: GBC Word16
  load16_imm = do
@@ -258,6 +264,7 @@ module CPU where
    upper <- load8_imm
    return $ ((fromIntegral upper) `shiftL` 8) + (fromIntegral lower)
 
+ (.^.) :: Bits a => a -> a -> a
  (.^.) = xor
 ------------------
 
@@ -305,14 +312,14 @@ module CPU where
  streamNextInstruction = do
    pcVal <- readRef pc
    next <- readMem pcVal
-   writeRef pc (pcVal + (lengthLookup !! (fromIntegral next)))
-   (if (next == 0xCB) then loadCBInstr else loadNormalInstr) pcVal next
+   writeRef pc (pcVal + 1)
+   if (next == 0xCB) then loadCBInstr else loadNormalInstr next
 
-  where loadNormalInstr pc next = do
+  where loadNormalInstr next = do
           liftM2 (,) (decodeInstruction next)
                      (return $ cycleLookup !! (fromIntegral next))
-        loadCBInstr pc next = do
-          suffix <- readMem $ pc + 1
+        loadCBInstr = do
+          suffix <- load8_imm
           liftM2 (,) (decodeCBInstruction suffix)
                      (return $ cbCycleLookup !! (fromIntegral suffix))
 
@@ -355,7 +362,7 @@ module CPU where
 
                   JRccn CondNZ <$> load8_imm,             --2
                   LDrrnn H L <$> load16_imm,
-                  return $ LDrHL A,
+                  return LDIA,
                   return $ INCrr H L,
                   return $ INCr H,
                   return $ DECr H,
@@ -363,8 +370,8 @@ module CPU where
                   return DAA,
                   JRccn CondZ <$> load8_imm,
                   return $ ADDHLrr H L,
-                  return $ LDrHL A,
-                  return DECHL,
+                  return LDAI,
+                  return $ DECrr H L,
                   return $ INCr L,
                   return $ DECr L,
                   LDrn L <$> load8_imm,
@@ -372,7 +379,7 @@ module CPU where
 
                   JRccn CondNC <$> load8_imm,             --3
                   LDSPnn <$> load16_imm,
-                  return $ LDHLr A,
+                  return LDDA,
                   return $ INCSP,
                   return INCHL,
                   return DECHL,
@@ -380,7 +387,7 @@ module CPU where
                   return SCF,
                   JRccn CondC <$> load8_imm,
                   return ADDHLSP,
-                  return $ LDrHL A,
+                  return LDAD,
                   return DECSP,
                   return $ INCr A,
                   return $ DECr A,
@@ -479,7 +486,7 @@ module CPU where
                   return $ SUBr H,
                   return $ SUBr L,
                   return SUBHL,
-                  return $ SBCr A,
+                  return $ SUBr A,
                   return $ SBCr B,
                   return $ SBCr C,
                   return $ SBCr D,
@@ -496,7 +503,7 @@ module CPU where
                   return $ ANDr H,
                   return $ ANDr L,
                   return ANDHL,
-                  return $ XORr A,
+                  return $ ANDr A,
                   return $ XORr B,
                   return $ XORr C,
                   return $ XORr D,
@@ -513,7 +520,7 @@ module CPU where
                   return $ ORr H,
                   return $ ORr L,
                   return ORHL,
-                  return $ CPr A,
+                  return $ ORr A,
                   return $ CPr B,
                   return $ CPr C,
                   return $ CPr D,
@@ -524,7 +531,7 @@ module CPU where
                   return $ CPr A,
 
                   return $ RETcc CondNZ,                  --C
-                  return $ POPrr D E,
+                  return $ POPrr B C,
                   JPccnn CondNZ <$> load16_imm,
                   JPnn <$> load16_imm,
                   CALLccnn CondNZ <$> load16_imm,
@@ -576,7 +583,7 @@ module CPU where
 
                   LDrn' A <$> load8_imm,                  --F
                   return $ POPrr A F,
-                  return ERROR,
+                  return $ LDrr' A C,
                   return DI,
                   return ERROR,
                   return $ PUSHrr A F,
@@ -937,14 +944,30 @@ module CPU where
    LDrDE reg -> readReg2 D E >>= readMem >>= writeReg reg
    LDrnn reg imm16 -> readMem imm16 >>= writeReg reg
    LDHLr reg -> join $ writeMem <$> (readReg2 H L) <*> (readReg reg)
-   LDBCr reg -> join $ writeMem <$> (readReg2 H L) <*> (readReg reg)
-   LDDEr reg -> join $ writeMem <$> (readReg2 H L) <*> (readReg reg)
+   LDBCr reg -> join $ writeMem <$> (readReg2 B C) <*> (readReg reg)
+   LDDEr reg -> join $ writeMem <$> (readReg2 D E) <*> (readReg reg)
    LDHLn imm -> join $ writeMem <$> (readReg2 H L) <*> (return imm)
    LDnnr imm16 reg -> join $ writeMem <$> (return imm16) <*> (readReg reg)
    LDrr' reg1 reg2 -> join $ writeReg reg1 <$> (readMem =<< (lift8 $ readReg reg2))
    LDrr'' reg1 reg2 -> join $ writeMem <$> (lift8 $ readReg reg1) <*> readReg reg2
    LDnr imm reg -> readReg reg >>= writeMem (fromIntegral imm + 0xFF00)
    LDrn' reg imm -> join $ writeReg reg <$> (readMem $ fromIntegral imm + 0xFF00)
+   LDIA -> do -- LD (HL+),A : write A to (HL), then HL++
+     addr <- readReg2 H L
+     readReg A >>= writeMem addr
+     writeReg2 H L (addr + 1)
+   LDAI -> do -- LD A,(HL+) : read (HL) into A, then HL++
+     addr <- readReg2 H L
+     readMem addr >>= writeReg A
+     writeReg2 H L (addr + 1)
+   LDDA -> do -- LD (HL-),A : write A to (HL), then HL--
+     addr <- readReg2 H L
+     readReg A >>= writeMem addr
+     writeReg2 H L (addr - 1)
+   LDAD -> do -- LD A,(HL-) : read (HL) into A, then HL--
+     addr <- readReg2 H L
+     readMem addr >>= writeReg A
+     writeReg2 H L (addr - 1)
 --16-bit loads
    LDrrnn reg1 reg2 imm16 -> writeReg2 reg1 reg2 imm16
    LDSPnn imm16 -> writeRef sp imm16
@@ -952,7 +975,10 @@ module CPU where
    LDHLSPn imm -> do
      spval <- readRef sp
      writeReg2 H L $ spval + (fromIntegral imm)
-   LDnnSP imm16 -> writeRef sp imm16
+   LDnnSP imm16 -> do
+     spVal <- readRef sp
+     writeMem imm16 (fromIntegral $ spVal .&. 0xFF)
+     writeMem (imm16 + 1) (fromIntegral $ spVal `shiftR` 8)
    PUSHrr reg1 reg2 -> do --left-most byte => SP-1, right-most byte => SP-2
      spVal <- readRef sp
      readReg reg1 >>= writeMem ((spVal-1) .&. 0xFFFF)
@@ -962,7 +988,7 @@ module CPU where
      spVal <- readRef sp
      right <- readMem spVal
      left <- readMem $ (spVal+1) .&. 0xFFFF
-     writeReg2 reg1 reg2 $ (fromIntegral $ shiftL left 8) .|. (fromIntegral right)
+     writeReg2 reg1 reg2 $ ((fromIntegral left) `shiftL` 8) .|. (fromIntegral right)
      writeRef sp $ spVal + 2
 --8-bit ALU
    ADDr reg -> executeALUInstr (+)   =<< (readReg reg)
@@ -1280,11 +1306,11 @@ module CPU where
    JPHL -> writeRef pc =<< (readReg2 H L)
    JRn imm -> do
      currAddr <- readRef pc
-     writeRef pc $ currAddr + (fromIntegral imm) - 2
+     writeRef pc $ currAddr + fromIntegral (fromIntegral imm :: Int8)
    JRccn cond imm -> do
      currAddr <- readRef pc
      toJump <- testFlagCondition cond
-     let jumpAddr = (currAddr .&. 0xFF00) + (fromIntegral $ imm + (fromIntegral $ currAddr .&. 0x00FF))
+     let jumpAddr = currAddr + fromIntegral (fromIntegral imm :: Int8)
      if toJump then writeRef pc jumpAddr else return ()
    CALLnn imm -> do
      spVal <- readRef sp

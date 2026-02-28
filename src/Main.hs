@@ -1,35 +1,29 @@
+import System.Environment (getArgs)
+import System.Exit (exitFailure)
 import GBC
 
 main :: IO ()
 main = do
-  GBC.run
+  args <- getArgs
+  let (ssDir, args') = extractScreenshotDir args
+      (flags, rest)  = partition (\a -> a == "--skip-boot" || a == "--trace") args'
+      skipBoot = "--skip-boot" `elem` flags
+      trace    = "--trace"     `elem` flags
+  case rest of
+    [romPath] -> GBC.run romPath skipBoot trace ssDir
+    _         -> do
+      putStrLn "Usage: haskellboy [--skip-boot] [--trace] [--screenshot-dir DIR] <rom-file>"
+      exitFailure
 
+partition :: (a -> Bool) -> [a] -> ([a], [a])
+partition _ [] = ([], [])
+partition p (x:xs)
+  | p x       = (x : yes, no)
+  | otherwise  = (yes, x : no)
+  where (yes, no) = partition p xs
 
-
-
-
-
-
-
-{-   
-   initializeAll
-   window <- createWindow "My SDL Application" defaultWindow
-   renderer <- createRenderer window (-1) defaultRenderer
-   appLoop renderer
-
- appLoop :: Renderer -> IO ()
- appLoop renderer = do
-   events <- pollEvents
-   let eventIsQPress event =
-         case eventPayload event of
-           KeyboardEvent keyboardEvent ->
-             keyboardEventKeyMotion keyboardEvent == Pressed &&
-             keysymKeycode (keyboardEventKeysym keyboardEvent) == KeycodeQ
-           _ -> False
-       qPressed = not (null (filter eventIsQPress events))
-   rendererDrawColor renderer $= V4 0 0 255 255
-   clear renderer
-   present renderer
-   unless qPressed (appLoop renderer)
-
--}
+extractScreenshotDir :: [String] -> (Maybe FilePath, [String])
+extractScreenshotDir [] = (Nothing, [])
+extractScreenshotDir ("--screenshot-dir":dir:rest) = (Just dir, rest)
+extractScreenshotDir (x:xs) = let (d, rest) = extractScreenshotDir xs
+                              in (d, x:rest)

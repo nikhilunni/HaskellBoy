@@ -1,13 +1,8 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 module Memory
  where
 
- import Control.Monad
  import Control.Monad.Reader
  import Control.Monad.ST
- import Control.Monad.Trans
- import Control.Applicative
 
  import Data.Word
  import Data.Array.ST
@@ -16,7 +11,7 @@ module Memory
 
  import Types
 
- import SDL hiding (Palette)
+ import SDL (Window, Renderer)
 
  new :: Window -> Renderer -> Bool -> Word8 -> ST s (Memory s)
  new window' renderer' gbcMode numRomBanks = do
@@ -36,6 +31,13 @@ module Memory
    transferred' <- newSTRef False
    gpu_cycles' <- newSTRef 0
    gbc_mode' <- newSTRef gbcMode
+   bootRomActive' <- newSTRef False
+   cartFirstPage' <- newArray (0x0000, 0x00FF) 0
+   traceEnabled' <- newSTRef False
+   romBank' <- newSTRef 1
+   framebuffer' <- newArray (0, 160*144*3 - 1) 0
+   screenshotDir' <- newSTRef Nothing
+   testMode' <- newSTRef False
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -54,6 +56,13 @@ module Memory
                  , gbc_mode = gbc_mode'
                  , window = window'
                  , renderer = renderer'
+                 , bootRomActive = bootRomActive'
+                 , cartFirstPage = cartFirstPage'
+                 , traceEnabled = traceEnabled'
+                 , romBank = romBank'
+                 , framebuffer = framebuffer'
+                 , screenshotDir = screenshotDir'
+                 , testMode = testMode'
                  }
 
  readArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> GBC Word8
@@ -89,10 +98,11 @@ module Memory
  readReg2 D E = readR D E
  readReg2 H L = readR H L
 
+ readR :: Register -> Register -> GBC Word16
  readR reg1 reg2 = do
    a <- readArr registers (eNum reg1)
    b <- readArr registers (eNum reg2)
-   return $ fromIntegral $ (a `shiftL` 8) + b
+   return $ ((fromIntegral a) `shiftL` 8) .|. (fromIntegral b)
 
  writeReg2 :: Register -> Register -> Word16 -> GBC ()
  writeReg2 A F = writeR A F
@@ -100,6 +110,7 @@ module Memory
  writeReg2 D E = writeR D E
  writeReg2 H L = writeR H L
 
+ writeR :: Register -> Register -> Word16 -> GBC ()
  writeR reg1 reg2 val = do
    writeArr registers (eNum reg1) (fromIntegral $ val `shiftR` 8)
    writeArr registers (eNum reg2) (fromIntegral $ val .&. 0xFF)
@@ -127,3 +138,55 @@ module Memory
              0xa8, 0x00, 0x1a, 0x13, 0xbe, 0x20, 0xfe, 0x23, 0x7d, 0xfe, 0x34, 0x20,
              0xf5, 0x06, 0x19, 0x78, 0x86, 0x23, 0x05, 0x20, 0xfb, 0x86, 0x00, 0x00,
              0x3e, 0x01, 0xe0, 0x50]
+
+ newForTest :: IO (Memory RealWorld)
+ newForTest = stToIO $ do
+   memory' <- newArray (0x0000, 0xFFFF) 0
+   bgPalettes' <- newArray (0x0, 0x3F) 0
+   registers' <- newArray (0x0, 0x7) 0
+   romBanks' <- newArray ((1,0x4000), (1, 0x7FFF)) 0
+   vramBank' <- newArray (0x8000, 0x9FFF) 0
+   wramBanks' <- newArray ((1,0xD000), (7,0xDFFF)) 0
+   sp' <- newSTRef 0x0000
+   pc' <- newSTRef 0x0000
+   cycles' <- newSTRef 0
+   ime' <- newSTRef False
+   halt' <- newSTRef False
+   mode' <- newSTRef OAMSearch
+   line' <- newSTRef 0
+   transferred' <- newSTRef False
+   gpu_cycles' <- newSTRef 0
+   gbc_mode' <- newSTRef False
+   bootRomActive' <- newSTRef False
+   cartFirstPage' <- newArray (0x0000, 0x00FF) 0
+   traceEnabled' <- newSTRef False
+   romBank' <- newSTRef 1
+   framebuffer' <- newArray (0, 160*144*3 - 1) 0
+   screenshotDir' <- newSTRef Nothing
+   testMode' <- newSTRef True
+   return Memory { memory = memory'
+                 , bgPalettes = bgPalettes'
+                 , registers = registers'
+                 , romBanks = romBanks'
+                 , vramBank = vramBank'
+                 , wramBanks = wramBanks'
+                 , sp = sp'
+                 , pc = pc'
+                 , cycles = cycles'
+                 , ime = ime'
+                 , halt = halt'
+                 , mode = mode'
+                 , line = line'
+                 , transferred = transferred'
+                 , gpu_cycles = gpu_cycles'
+                 , gbc_mode = gbc_mode'
+                 , window = error "newForTest: window not available"
+                 , renderer = error "newForTest: renderer not available"
+                 , bootRomActive = bootRomActive'
+                 , cartFirstPage = cartFirstPage'
+                 , traceEnabled = traceEnabled'
+                 , romBank = romBank'
+                 , framebuffer = framebuffer'
+                 , screenshotDir = screenshotDir'
+                 , testMode = testMode'
+                 }
