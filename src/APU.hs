@@ -8,8 +8,9 @@ module APU
  import Control.Monad (when)
  import Control.Monad.ST (RealWorld)
  import Data.Word
+ import Data.Int (Int16)
  import Data.STRef
- import Data.Bits ((.&.), (.|.), testBit, shiftR, shiftL)
+ import Data.Bits ((.&.), (.|.), testBit, shiftR, shiftL, xor, clearBit, setBit)
 
  import Types
  import Memory
@@ -41,6 +42,11 @@ module APU
            _ -> return ()
          writeRef apuFrameSeqStep ((step + 1) .&. 7)
        else writeRef apuFrameSeqCounter newCnt
+   -- Tick channel frequency timers (regardless of power for timer counting)
+   let d = fromIntegral delta :: Int
+   when power $ do
+     tickChannelTimers d
+     tickSampleAccum d
 
  tickLengthCounters :: GBC ()
  tickLengthCounters = do
@@ -145,6 +151,170 @@ module APU
                when (check > 2047) $ writeRef ch1Active False
        else writeRef ch1SweepTimer timer'
 
+ -- Tick all channel frequency timers by d T-cycles
+ tickChannelTimers :: Int -> GBC ()
+ tickChannelTimers d = do
+   -- Channel 1: period = (2048 - freq) * 4
+   do nr13 <- readArr memory 0xFF13
+      nr14 <- readArr memory 0xFF14
+      let freq = fromIntegral nr13 .|. ((fromIntegral (nr14 .&. 0x07)) `shiftL` 8) :: Int
+          period = max 1 $ (2048 - freq) * 4
+      timer <- readRef ch1FreqTimer
+      let newTimer = timer - d
+      if newTimer <= 0
+        then do
+          writeRef ch1FreqTimer (period + newTimer)
+          pos <- readRef ch1DutyPos
+          writeRef ch1DutyPos ((pos + 1) .&. 7)
+        else writeRef ch1FreqTimer newTimer
+   -- Channel 2: period = (2048 - freq) * 4
+   do nr23 <- readArr memory 0xFF18
+      nr24 <- readArr memory 0xFF19
+      let freq = fromIntegral nr23 .|. ((fromIntegral (nr24 .&. 0x07)) `shiftL` 8) :: Int
+          period = max 1 $ (2048 - freq) * 4
+      timer <- readRef ch2FreqTimer
+      let newTimer = timer - d
+      if newTimer <= 0
+        then do
+          writeRef ch2FreqTimer (period + newTimer)
+          pos <- readRef ch2DutyPos
+          writeRef ch2DutyPos ((pos + 1) .&. 7)
+        else writeRef ch2FreqTimer newTimer
+   -- Channel 3: period = (2048 - freq) * 2
+   do nr33 <- readArr memory 0xFF1D
+      nr34 <- readArr memory 0xFF1E
+      let freq = fromIntegral nr33 .|. ((fromIntegral (nr34 .&. 0x07)) `shiftL` 8) :: Int
+          period = max 1 $ (2048 - freq) * 2
+      timer <- readRef ch3FreqTimer
+      let newTimer = timer - d
+      if newTimer <= 0
+        then do
+          writeRef ch3FreqTimer (period + newTimer)
+          pos <- readRef ch3WavePos
+          writeRef ch3WavePos ((pos + 1) .&. 31)
+        else writeRef ch3FreqTimer newTimer
+   -- Channel 4: period = divisor << shift
+   do nr43 <- readArr memory 0xFF22
+      let shiftAmt = fromIntegral ((nr43 `shiftR` 4) .&. 0x0F) :: Int
+          divCode = nr43 .&. 0x07
+          divisor = if divCode == 0 then 8 else fromIntegral divCode * 16 :: Int
+          period = max 1 $ divisor `shiftL` shiftAmt
+          widthMode = testBit nr43 3
+      timer <- readRef ch4FreqTimer
+      let newTimer = timer - d
+      if newTimer <= 0
+        then do
+          writeRef ch4FreqTimer (period + newTimer)
+          -- Clock LFSR
+          lfsr <- readRef ch4LFSR
+          let bit0 = lfsr .&. 1
+              bit1 = (lfsr `shiftR` 1) .&. 1
+              xorBit = bit0 `xor` bit1
+              shifted = lfsr `shiftR` 1
+              newLfsr' = if xorBit == 1 then setBit shifted 14 else clearBit shifted 14
+              newLfsr = if widthMode
+                          then (if xorBit == 1 then setBit newLfsr' 6 else clearBit newLfsr' 6)
+                          else newLfsr'
+          writeRef ch4LFSR newLfsr
+        else writeRef ch4FreqTimer newTimer
+
+ -- Duty waveform patterns: returns True if output is high
+ {-# INLINE dutyOutput #-}
+ dutyOutput :: Word8 -> Word8 -> Bool
+ dutyOutput 0 pos = pos == 7
+ dutyOutput 1 pos = pos >= 6
+ dutyOutput 2 pos = pos >= 4
+ dutyOutput 3 pos = pos <= 5
+ dutyOutput _ _   = False
+
+ -- Accumulate sample timer and generate audio samples
+ tickSampleAccum :: Int -> GBC ()
+ tickSampleAccum d = do
+   devID <- readRef audioDeviceID
+   when (devID /= 0) $ do
+     accum <- readRef audioSampleAccum
+     let newAccum = accum + d * 44100
+     if newAccum >= 4194304
+       then do
+         writeRef audioSampleAccum (newAccum - 4194304)
+         generateSample
+       else writeRef audioSampleAccum newAccum
+
+ -- Generate one stereo audio sample and write to buffer
+ generateSample :: GBC ()
+ generateSample = do
+   -- Channel 1 amplitude
+   c1Active' <- readRef ch1Active
+   c1Amp <- if c1Active'
+     then do
+       nr11 <- readArr memory 0xFF11
+       let duty = (nr11 `shiftR` 6) .&. 0x03
+       pos <- readRef ch1DutyPos
+       vol <- readRef ch1EnvelopeVolume
+       return $ if dutyOutput duty pos then fromIntegral vol else 0 :: Int
+     else return 0
+   -- Channel 2 amplitude
+   c2Active' <- readRef ch2Active
+   c2Amp <- if c2Active'
+     then do
+       nr21 <- readArr memory 0xFF16
+       let duty = (nr21 `shiftR` 6) .&. 0x03
+       pos <- readRef ch2DutyPos
+       vol <- readRef ch2EnvelopeVolume
+       return $ if dutyOutput duty pos then fromIntegral vol else 0 :: Int
+     else return 0
+   -- Channel 3 amplitude
+   c3Active' <- readRef ch3Active
+   c3Amp <- if c3Active'
+     then do
+       nr32 <- readArr memory 0xFF1C
+       let volShift = case (nr32 `shiftR` 5) .&. 0x03 of
+                        0 -> 4  -- mute (shift out all bits)
+                        1 -> 0  -- 100%
+                        2 -> 1  -- 50%
+                        _ -> 2  -- 25%
+       pos <- readRef ch3WavePos
+       let byteAddr = 0xFF30 + fromIntegral (pos `shiftR` 1) :: Word16
+       waveByte <- readArr memory byteAddr
+       let sample4 = if even pos
+                       then (waveByte `shiftR` 4) .&. 0x0F
+                       else waveByte .&. 0x0F
+       return (fromIntegral (sample4 `shiftR` volShift) :: Int)
+     else return 0
+   -- Channel 4 amplitude
+   c4Active' <- readRef ch4Active
+   c4Amp <- if c4Active'
+     then do
+       lfsr <- readRef ch4LFSR
+       vol <- readRef ch4EnvelopeVolume
+       -- LFSR bit 0 inverted: 0 means output high
+       return $ if (lfsr .&. 1) == 0 then fromIntegral vol else 0 :: Int
+     else return 0
+   -- Mix per NR51 panning
+   nr51 <- readArr memory 0xFF25
+   let mixR = (if testBit nr51 0 then c1Amp else 0)
+            + (if testBit nr51 1 then c2Amp else 0)
+            + (if testBit nr51 2 then c3Amp else 0)
+            + (if testBit nr51 3 then c4Amp else 0)
+       mixL = (if testBit nr51 4 then c1Amp else 0)
+            + (if testBit nr51 5 then c2Amp else 0)
+            + (if testBit nr51 6 then c3Amp else 0)
+            + (if testBit nr51 7 then c4Amp else 0)
+   -- Apply master volume from NR50
+   nr50 <- readArr memory 0xFF24
+   let volR = fromIntegral (nr50 .&. 0x07) + 1 :: Int
+       volL = fromIntegral ((nr50 `shiftR` 4) .&. 0x07) + 1 :: Int
+   -- Scale to Int16: each channel 0-15, up to 4 channels = 0-60, ×8 = 0-480
+   -- Map to signed: (val - 240) * 136 gives range ~[-32640, +32640]
+       sampleL = fromIntegral $ (mixL * volL - 240) * 136 :: Int16
+       sampleR = fromIntegral $ (mixR * volR - 240) * 136 :: Int16
+   -- Write to audio buffer
+   bufPos <- readRef audioBufPos
+   when (bufPos < 4094) $ do
+     writeArrI16 audioBuffer bufPos sampleL
+     writeArrI16 audioBuffer (bufPos + 1) sampleR
+     writeRef audioBufPos (bufPos + 2)
+
  -- Extra length clocking on trigger: if length enable is set and frame sequencer
  -- step is not a length-clock step (odd step), clock the length counter once.
  extraLengthClock :: (Memory RealWorld -> STRef RealWorld Word16)
@@ -190,13 +360,15 @@ module APU
    nr12 <- readArr memory 0xFF12
    writeRef ch1EnvelopeVolume (nr12 `shiftR` 4)
    writeRef ch1EnvelopeTimer (nr12 .&. 0x07)
+   -- Reset frequency timer and duty position
+   nr13 <- readArr memory 0xFF13
+   let freq = fromIntegral nr13 .|. ((fromIntegral (nr14 .&. 0x07)) `shiftL` 8) :: Word16
+   writeRef ch1FreqTimer ((2048 - fromIntegral freq) * 4)
+   writeRef ch1DutyPos 0
    -- Restart sweep
    nr10 <- readArr memory 0xFF10
    let sweepPeriod = (nr10 `shiftR` 4) .&. 0x07
        sweepShift = nr10 .&. 0x07
-   -- Load shadow frequency from NR13/NR14
-   nr13 <- readArr memory 0xFF13
-   let freq = fromIntegral nr13 .|. ((fromIntegral (nr14 .&. 0x07)) `shiftL` 8) :: Word16
    writeRef ch1SweepShadow freq
    writeRef ch1SweepTimer (if sweepPeriod == 0 then 8 else sweepPeriod)
    writeRef ch1SweepEnabled (sweepPeriod /= 0 || sweepShift /= 0)
@@ -220,6 +392,11 @@ module APU
    nr22 <- readArr memory 0xFF17
    writeRef ch2EnvelopeVolume (nr22 `shiftR` 4)
    writeRef ch2EnvelopeTimer (nr22 .&. 0x07)
+   -- Reset frequency timer and duty position
+   nr23 <- readArr memory 0xFF18
+   let freq = fromIntegral nr23 .|. ((fromIntegral (nr24 .&. 0x07)) `shiftL` 8) :: Int
+   writeRef ch2FreqTimer ((2048 - freq) * 4)
+   writeRef ch2DutyPos 0
    when (nr22 .&. 0xF8 == 0) $ writeRef ch2Active False
 
  triggerChannel3 :: GBC ()
@@ -230,6 +407,11 @@ module APU
    nr34 <- readArr memory 0xFF1E
    when (testBit nr34 6) $
      extraLengthClock ch3LengthCounter ch3Active 256 True
+   -- Reset frequency timer and wave position
+   nr33 <- readArr memory 0xFF1D
+   let freq = fromIntegral nr33 .|. ((fromIntegral (nr34 .&. 0x07)) `shiftL` 8) :: Int
+   writeRef ch3FreqTimer ((2048 - freq) * 2)
+   writeRef ch3WavePos 0
    -- DAC check: NR30 bit 7
    nr30 <- readArr memory 0xFF1A
    when (not $ testBit nr30 7) $ writeRef ch3Active False
@@ -245,4 +427,11 @@ module APU
    nr42 <- readArr memory 0xFF21
    writeRef ch4EnvelopeVolume (nr42 `shiftR` 4)
    writeRef ch4EnvelopeTimer (nr42 .&. 0x07)
+   -- Reset frequency timer and LFSR
+   nr43 <- readArr memory 0xFF22
+   let shiftAmt = fromIntegral ((nr43 `shiftR` 4) .&. 0x0F) :: Int
+       divCode = nr43 .&. 0x07
+       divisor = if divCode == 0 then 8 else fromIntegral divCode * 16 :: Int
+   writeRef ch4FreqTimer (divisor `shiftL` shiftAmt)
+   writeRef ch4LFSR 0x7FFF
    when (nr42 .&. 0xF8 == 0) $ writeRef ch4Active False

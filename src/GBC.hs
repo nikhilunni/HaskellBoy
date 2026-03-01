@@ -6,11 +6,16 @@ module GBC
  import Control.Monad
  import Control.Monad.Reader
  import Control.Monad.ST
+ import Data.STRef (writeSTRef)
 
  import Data.Word
  import Numeric (showHex)
 
  import System.IO (hPutStrLn, stderr)
+
+ import Foreign (alloca, poke, nullFunPtr, nullPtr)
+ import qualified SDL.Raw.Audio as RawAudio
+ import qualified SDL.Raw.Types as RawTypes
 
  import Types
  import Memory
@@ -40,7 +45,23 @@ module GBC
    initializeAll
    window' <- createWindow "HaskellBoy" defaultWindowConfig
    renderer' <- createRenderer window' (-1) defaultRenderer
+   -- Open SDL audio device in queue mode (null callback)
+   devID <- alloca $ \desiredPtr -> alloca $ \obtainedPtr -> do
+     poke desiredPtr $ RawTypes.AudioSpec
+       { RawTypes.audioSpecFreq = 44100
+       , RawTypes.audioSpecFormat = 0x8010  -- AUDIO_S16LSB
+       , RawTypes.audioSpecChannels = 2
+       , RawTypes.audioSpecSilence = 0
+       , RawTypes.audioSpecSamples = 1024
+       , RawTypes.audioSpecSize = 0
+       , RawTypes.audioSpecCallback = nullFunPtr
+       , RawTypes.audioSpecUserdata = nullPtr
+       }
+     dev <- RawAudio.openAudioDevice nullPtr 0 desiredPtr obtainedPtr 0
+     RawAudio.pauseAudioDevice dev 0  -- unpause
+     return dev
    mem <- stToIO $ Memory.new window' renderer' True numBanks
+   stToIO $ writeSTRef (audioDeviceID mem) devID
    runReaderT reader mem
 
  postBootState :: GBC ()

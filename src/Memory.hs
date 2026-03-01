@@ -5,6 +5,7 @@ module Memory
  import Control.Monad.ST
 
  import Data.Word
+ import Data.Int (Int16)
  import Data.Array.ST
  import Data.STRef
  import Data.Bits ((.&.), (.|.), setBit, shiftL, shiftR)
@@ -67,6 +68,21 @@ module Memory
    ch4LengthCounter' <- newSTRef 0
    ch4EnvelopeTimer' <- newSTRef 0
    ch4EnvelopeVolume' <- newSTRef 0
+   joypadButtons' <- newSTRef 0xFF
+   joypadDirPad' <- newSTRef 0xFF
+   lastFrameTicks' <- newSTRef 0
+   ch1FreqTimer' <- newSTRef 0
+   ch1DutyPos' <- newSTRef 0
+   ch2FreqTimer' <- newSTRef 0
+   ch2DutyPos' <- newSTRef 0
+   ch3FreqTimer' <- newSTRef 0
+   ch3WavePos' <- newSTRef 0
+   ch4FreqTimer' <- newSTRef 0
+   ch4LFSR' <- newSTRef 0x7FFF
+   audioDeviceID' <- newSTRef 0
+   audioBuffer' <- newArray (0, 4095) 0
+   audioBufPos' <- newSTRef 0
+   audioSampleAccum' <- newSTRef 0
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -121,6 +137,21 @@ module Memory
                  , ch4LengthCounter = ch4LengthCounter'
                  , ch4EnvelopeTimer = ch4EnvelopeTimer'
                  , ch4EnvelopeVolume = ch4EnvelopeVolume'
+                 , joypadButtons = joypadButtons'
+                 , joypadDirPad = joypadDirPad'
+                 , lastFrameTicks = lastFrameTicks'
+                 , ch1FreqTimer = ch1FreqTimer'
+                 , ch1DutyPos = ch1DutyPos'
+                 , ch2FreqTimer = ch2FreqTimer'
+                 , ch2DutyPos = ch2DutyPos'
+                 , ch3FreqTimer = ch3FreqTimer'
+                 , ch3WavePos = ch3WavePos'
+                 , ch4FreqTimer = ch4FreqTimer'
+                 , ch4LFSR = ch4LFSR'
+                 , audioDeviceID = audioDeviceID'
+                 , audioBuffer = audioBuffer'
+                 , audioBufPos = audioBufPos'
+                 , audioSampleAccum = audioSampleAccum'
                  }
 
  {-# INLINE readArr #-}
@@ -132,6 +163,18 @@ module Memory
  {-# INLINE writeArr #-}
  writeArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> Word8 -> GBC ()
  writeArr accessor i val = GBC $ do
+   arr <- asks accessor
+   lift $ stToIO $ writeArray arr i val
+
+ {-# INLINE readArrI16 #-}
+ readArrI16 :: Ix i => (Memory RealWorld -> STUArray RealWorld i Int16) -> i -> GBC Int16
+ readArrI16 accessor i = GBC $ do
+   arr <- asks accessor
+   lift $ stToIO $ readArray arr i
+
+ {-# INLINE writeArrI16 #-}
+ writeArrI16 :: Ix i => (Memory RealWorld -> STUArray RealWorld i Int16) -> i -> Int16 -> GBC ()
+ writeArrI16 accessor i val = GBC $ do
    arr <- asks accessor
    lift $ stToIO $ writeArray arr i val
 
@@ -261,6 +304,21 @@ module Memory
    ch4LengthCounter' <- newSTRef 0
    ch4EnvelopeTimer' <- newSTRef 0
    ch4EnvelopeVolume' <- newSTRef 0
+   joypadButtons' <- newSTRef 0xFF
+   joypadDirPad' <- newSTRef 0xFF
+   lastFrameTicks' <- newSTRef 0
+   ch1FreqTimer' <- newSTRef 0
+   ch1DutyPos' <- newSTRef 0
+   ch2FreqTimer' <- newSTRef 0
+   ch2DutyPos' <- newSTRef 0
+   ch3FreqTimer' <- newSTRef 0
+   ch3WavePos' <- newSTRef 0
+   ch4FreqTimer' <- newSTRef 0
+   ch4LFSR' <- newSTRef 0x7FFF
+   audioDeviceID' <- newSTRef 0
+   audioBuffer' <- newArray (0, 0) 0
+   audioBufPos' <- newSTRef 0
+   audioSampleAccum' <- newSTRef 0
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -315,6 +373,21 @@ module Memory
                  , ch4LengthCounter = ch4LengthCounter'
                  , ch4EnvelopeTimer = ch4EnvelopeTimer'
                  , ch4EnvelopeVolume = ch4EnvelopeVolume'
+                 , joypadButtons = joypadButtons'
+                 , joypadDirPad = joypadDirPad'
+                 , lastFrameTicks = lastFrameTicks'
+                 , ch1FreqTimer = ch1FreqTimer'
+                 , ch1DutyPos = ch1DutyPos'
+                 , ch2FreqTimer = ch2FreqTimer'
+                 , ch2DutyPos = ch2DutyPos'
+                 , ch3FreqTimer = ch3FreqTimer'
+                 , ch3WavePos = ch3WavePos'
+                 , ch4FreqTimer = ch4FreqTimer'
+                 , ch4LFSR = ch4LFSR'
+                 , audioDeviceID = audioDeviceID'
+                 , audioBuffer = audioBuffer'
+                 , audioBufPos = audioBufPos'
+                 , audioSampleAccum = audioSampleAccum'
                  }
 
  newHeadless :: Word8 -> IO (Memory RealWorld)
@@ -371,6 +444,21 @@ module Memory
    ch4LengthCounter' <- newSTRef 0
    ch4EnvelopeTimer' <- newSTRef 0
    ch4EnvelopeVolume' <- newSTRef 0
+   joypadButtons' <- newSTRef 0xFF
+   joypadDirPad' <- newSTRef 0xFF
+   lastFrameTicks' <- newSTRef 0
+   ch1FreqTimer' <- newSTRef 0
+   ch1DutyPos' <- newSTRef 0
+   ch2FreqTimer' <- newSTRef 0
+   ch2DutyPos' <- newSTRef 0
+   ch3FreqTimer' <- newSTRef 0
+   ch3WavePos' <- newSTRef 0
+   ch4FreqTimer' <- newSTRef 0
+   ch4LFSR' <- newSTRef 0x7FFF
+   audioDeviceID' <- newSTRef 0
+   audioBuffer' <- newArray (0, 0) 0
+   audioBufPos' <- newSTRef 0
+   audioSampleAccum' <- newSTRef 0
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -425,4 +513,19 @@ module Memory
                  , ch4LengthCounter = ch4LengthCounter'
                  , ch4EnvelopeTimer = ch4EnvelopeTimer'
                  , ch4EnvelopeVolume = ch4EnvelopeVolume'
+                 , joypadButtons = joypadButtons'
+                 , joypadDirPad = joypadDirPad'
+                 , lastFrameTicks = lastFrameTicks'
+                 , ch1FreqTimer = ch1FreqTimer'
+                 , ch1DutyPos = ch1DutyPos'
+                 , ch2FreqTimer = ch2FreqTimer'
+                 , ch2DutyPos = ch2DutyPos'
+                 , ch3FreqTimer = ch3FreqTimer'
+                 , ch3WavePos = ch3WavePos'
+                 , ch4FreqTimer = ch4FreqTimer'
+                 , ch4LFSR = ch4LFSR'
+                 , audioDeviceID = audioDeviceID'
+                 , audioBuffer = audioBuffer'
+                 , audioBufPos = audioBufPos'
+                 , audioSampleAccum = audioSampleAccum'
                  }

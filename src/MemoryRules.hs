@@ -62,11 +62,22 @@ module MemoryRules
          Transfer  -> return 0xFF
          _         -> readArr memory addr
    | addr >= 0xFEA0 && addr <= 0xFEFF = return 0x00                   -- Unusable region
+   | addr == 0xFF00                   = readJoypad                     -- Joypad register
    | addr == 0xFF26                   = readNR52                       -- NR52: build from APU state
    | addr >= 0xFF10 && addr <= 0xFF2F = readSoundReg addr             -- Sound registers
    | addr == 0xFF76                   = readPCM12                      -- PCM12: ch1/ch2 amplitude
    | addr == 0xFF77                   = readPCM34                      -- PCM34: ch3/ch4 amplitude
    | otherwise                        = readArr memory addr
+
+ -- Joypad register (0xFF00): select via bits 4-5, read buttons/dpad in bits 0-3
+ readJoypad :: GBC Word8
+ readJoypad = do
+   sel <- readArr memory 0xFF00
+   btns <- readRef joypadButtons
+   dirs <- readRef joypadDirPad
+   let input = (if testBit sel 4 then 0x0F else dirs .&. 0x0F)
+             .&. (if testBit sel 5 then 0x0F else btns .&. 0x0F)
+   return $ 0xC0 .|. (sel .&. 0x30) .|. input
 
  -- NR52: bit 7 = power, bits 3-0 = channel active, bits 6-4 always read as 1
  readNR52 :: GBC Word8

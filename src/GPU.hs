@@ -99,6 +99,8 @@ module GPU
                    lcdModeSwitch VBlankMode
                    showScreen
                    pollSDLEvents
+                   queueAudioSamples
+                   limitFrameRate
                    dir <- readRef screenshotDir
                    case dir of
                      Just d  -> captureScreenshot (d ++ "/screenshot.bmp")

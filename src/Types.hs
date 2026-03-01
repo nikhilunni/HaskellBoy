@@ -5,6 +5,7 @@ module Types
  where
 
  import Data.Word
+ import Data.Int (Int16)
  import Data.Array.ST
  import Data.STRef
 
@@ -93,6 +94,25 @@ module Types
                         , ch4LengthCounter :: STRef s Word16
                         , ch4EnvelopeTimer :: STRef s Word8
                         , ch4EnvelopeVolume :: STRef s Word8
+                        -- Joypad state
+                        , joypadButtons :: STRef s Word8  -- A/B/Select/Start (active-low)
+                        , joypadDirPad :: STRef s Word8   -- Up/Down/Left/Right (active-low)
+                        -- Frame limiting
+                        , lastFrameTicks :: STRef s Word32
+                        -- Channel waveform state
+                        , ch1FreqTimer :: STRef s Int
+                        , ch1DutyPos :: STRef s Word8
+                        , ch2FreqTimer :: STRef s Int
+                        , ch2DutyPos :: STRef s Word8
+                        , ch3FreqTimer :: STRef s Int
+                        , ch3WavePos :: STRef s Word8
+                        , ch4FreqTimer :: STRef s Int
+                        , ch4LFSR :: STRef s Word16
+                        -- Audio output
+                        , audioDeviceID :: STRef s Word32
+                        , audioBuffer :: STUArray s Int Int16
+                        , audioBufPos :: STRef s Int
+                        , audioSampleAccum :: STRef s Int
                         }
 
  data CartMode = DMGMode | GBCMode

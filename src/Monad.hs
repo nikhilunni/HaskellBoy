@@ -3,17 +3,21 @@
 module Monad
         where
 
- import Control.Monad (when)
+ import Control.Monad (when, forM_, void)
  import Control.Monad.Reader
  import Control.Monad.ST (stToIO)
 
  import SDL
 
+ import qualified SDL.Raw.Audio as RawAudio
+
  import Foreign.C.Types
+ import Foreign.Marshal.Array (withArray)
+ import Foreign.Ptr (Ptr, castPtr)
 
  import Data.Word
  import Data.Bits
- import Data.Array.ST (writeArray, readArray, getElems)
+ import Data.Array.ST (writeArray, getElems)
  import qualified Data.ByteString as BS
 
  import System.Exit
@@ -128,12 +132,62 @@ module Monad
                     Nothing -> "screenshot.bmp"
        captureScreenshot path
        liftIO $ hPutStrLn stderr $ "Screenshot saved to " ++ path
+     -- Process joypad input
+     forM_ events $ \event -> case eventPayload event of
+       KeyboardEvent kd -> do
+         let motion = keyboardEventKeyMotion kd
+             key = keysymKeycode (keyboardEventKeysym kd)
+         case keyToButton key of
+           Just (isDir, bitIdx) -> do
+             let ref = if isDir then joypadDirPad else joypadButtons
+             val <- readRef ref
+             case motion of
+               Pressed -> do
+                 when (testBit val bitIdx) $ requestInterrupt Joypad
+                 writeRef ref (clearBit val bitIdx)
+               Released -> writeRef ref (setBit val bitIdx)
+           Nothing -> return ()
+       _ -> return ()
    where
      isF12Press e = case eventPayload e of
        KeyboardEvent kd ->
          keyboardEventKeyMotion kd == Pressed &&
          keysymKeycode (keyboardEventKeysym kd) == KeycodeF12
        _ -> False
+
+ -- Map SDL keycodes to (isDirectionPad, bitIndex)
+ keyToButton :: Keycode -> Maybe (Bool, Int)
+ keyToButton KeycodeZ         = Just (False, 0)  -- A
+ keyToButton KeycodeX         = Just (False, 1)  -- B
+ keyToButton KeycodeBackspace = Just (False, 2)  -- Select
+ keyToButton KeycodeReturn    = Just (False, 3)  -- Start
+ keyToButton KeycodeRight     = Just (True,  0)  -- Right
+ keyToButton KeycodeLeft      = Just (True,  1)  -- Left
+ keyToButton KeycodeUp        = Just (True,  2)  -- Up
+ keyToButton KeycodeDown      = Just (True,  3)  -- Down
+ keyToButton _                = Nothing
+
+ limitFrameRate :: GBC ()
+ limitFrameRate = do
+   hl <- readRef headless
+   when (not hl) $ do
+     now <- ticks
+     lastT <- readRef lastFrameTicks
+     let elapsed = now - lastT
+     when (elapsed < 17) $ delay (17 - elapsed)
+     writeRef lastFrameTicks =<< ticks
+
+ queueAudioSamples :: GBC ()
+ queueAudioSamples = do
+   hl <- readRef headless
+   when (not hl) $ do
+     devID <- readRef audioDeviceID
+     bufPos <- readRef audioBufPos
+     when (bufPos > 0 && devID /= 0) $ do
+       samples <- mapM (readArrI16 audioBuffer) [0..bufPos-1]
+       liftIO $ withArray samples $ \ptr ->
+         void $ RawAudio.queueAudio devID (castPtr ptr :: Ptr ()) (fromIntegral $ bufPos * 2)
+       writeRef audioBufPos 0
 
  -- Helpers for little-endian BMP encoding
  word32LE :: Int -> [Word8]
