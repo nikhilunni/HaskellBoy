@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module GPU
  where
 
@@ -10,6 +12,7 @@ module GPU
  import Memory
 
 
+ {-# INLINE tickTimer #-}
  tickTimer :: Cycles -> GBC ()
  tickTimer delta = do
    -- DIV register: increments every 256 T-cycles
@@ -47,6 +50,7 @@ module GPU
  screen_height :: Int
  screen_height = 144
 
+ {-# INLINE compareLY_LYC #-}
  compareLY_LYC :: GBC ()
  compareLY_LYC = do
    ly <- readArr memory ly_addr
@@ -56,6 +60,7 @@ module GPU
    when (ly == lyc && testBit stat 6) $ requestInterrupt STAT
 
 
+ {-# INLINE lcdModeSwitch #-}
  lcdModeSwitch :: GPUMode -> GBC ()
  lcdModeSwitch m = do
    writeRef mode m
@@ -127,22 +132,24 @@ module GPU
 
 
 
+ {-# INLINE scanLine #-}
  scanLine :: Word8 -> GBC ()
  scanLine lineNum = do
    lcdc <- readArr memory lcdc_addr
-   if (testBit lcdc 7)
-      then renderLine lineNum
-     else return ()
+   when (testBit lcdc 7) $ do
+     hl <- readRef headless
+     renderLine hl lineNum
 
- renderLine :: Word8 -> GBC ()
- renderLine line = do
-   renderBackground line
-   renderWindow line
-   renderSprites line
+ {-# INLINE renderLine #-}
+ renderLine :: Bool -> Word8 -> GBC ()
+ renderLine !hl !line = do
+   renderBackground hl line
+   renderWindow hl line
+   renderSprites hl line
 
 
- renderBackground :: Word8 -> GBC ()
- renderBackground line = do
+ renderBackground :: Bool -> Word8 -> GBC ()
+ renderBackground !hl !line = do
    lcdc <- readArr memory lcdc_addr
    gbc <- readRef gbc_mode
    if (testBit lcdc 0) --If BG display is enabled
@@ -163,45 +170,110 @@ module GPU
               let tileAddrOffsetUpper = bgStart + (fromIntegral yTileOffset) +
                                         (fromIntegral xTileOffset) + 20
 
-              forM [tileAddrOffsetLower .. tileAddrOffsetUpper] $ \tileIdx -> do
+              forM_ [tileAddrOffsetLower .. tileAddrOffsetUpper] $ \tileIdx -> do
                 tileAttr <- if gbc then (readArr vramBank tileIdx) else (return 0)
                 tileNum <- (+ offset) <$> (readArr memory tileIdx)
 
-                let yByteOffset = 2 * (if testBit tileAttr 6 then (7 - (totalY `mod` 8)) else (totalY `mod` 8))
-                let finalTileAddr = (fromIntegral tileNum * 16) + tileStart + (fromIntegral yByteOffset)
+                let !yByteOffset = 2 * (if testBit tileAttr 6 then (7 - (totalY `mod` 8)) else (totalY `mod` 8))
+                let !finalTileAddr = (fromIntegral tileNum * 16) + tileStart + (fromIntegral yByteOffset)
                 let tile_bank = (if testBit tileAttr 3 then vramBank else memory)
                 lowerByte <- readArr tile_bank finalTileAddr
                 upperByte <- readArr tile_bank $ finalTileAddr + 1
-                let pixelNums = (if testBit tileAttr 5 then reverse else id) $ getPixelNums lowerByte upperByte
-                let posXs = [ fromIntegral ((tileIdx - tileAddrOffsetLower - 1) * 8 - fromIntegral scx) ..
-                             fromIntegral ((tileIdx - tileAddrOffsetLower) * 8 - 1 - fromIntegral scx) ]
+                let !packed = if testBit tileAttr 5
+                                then packTileRowFlipped lowerByte upperByte
+                                else packTileRow lowerByte upperByte
+                let !tileOff = fromIntegral tileIdx - fromIntegral tileAddrOffsetLower :: Int
+                    !scxI = fromIntegral (scx .&. 0x07) :: Int
+                    !startX = (tileOff - 1) * 8 - scxI
                 pal <- (if gbc then (getGBCPalette $ tileAttr .&. 0x7) else (getGBPalette <$> readArr memory bgp_addr))
-                sequence_ $ [renderPixel pal px line col | (px,col) <- zip posXs pixelNums]
-              return ()
+                renderTileRow hl pal packed startX (fromIntegral line)
      else return ()
 
- --Lower byte represents LSB, upper byte represents MSB of each 8 pixels, with range [0 .. 3]
- getPixelNums :: Word8 -> Word8 -> [GBColor]
- getPixelNums lowerByte upperByte = [toGBColor $ (if lowerByte `testBit` i then 1 else 0) +
-                                     (if upperByte `testBit` i then 2 else 0) | i <- [7,6 .. 0]]
+ -- Pack lo/hi tile bytes into a Word16: 2 bits per pixel, pixel 0 in bits 15:14
+ {-# INLINE packTileRow #-}
+ packTileRow :: Word8 -> Word8 -> Word16
+ packTileRow !lo !hi =
+   let !b7 = fromIntegral (((hi `shiftR` 7) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 7) .&. 1)) :: Word16
+       !b6 = fromIntegral (((hi `shiftR` 6) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 6) .&. 1)) :: Word16
+       !b5 = fromIntegral (((hi `shiftR` 5) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 5) .&. 1)) :: Word16
+       !b4 = fromIntegral (((hi `shiftR` 4) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 4) .&. 1)) :: Word16
+       !b3 = fromIntegral (((hi `shiftR` 3) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 3) .&. 1)) :: Word16
+       !b2 = fromIntegral (((hi `shiftR` 2) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 2) .&. 1)) :: Word16
+       !b1 = fromIntegral (((hi `shiftR` 1) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 1) .&. 1)) :: Word16
+       !b0 = fromIntegral (((hi             ) .&. 1) `shiftL` 1 .|. ((lo             ) .&. 1)) :: Word16
+   in (b7 `shiftL` 14) .|. (b6 `shiftL` 12) .|. (b5 `shiftL` 10) .|. (b4 `shiftL` 8)
+      .|. (b3 `shiftL` 6) .|. (b2 `shiftL` 4) .|. (b1 `shiftL` 2) .|. b0
 
+ {-# INLINE packTileRowFlipped #-}
+ packTileRowFlipped :: Word8 -> Word8 -> Word16
+ packTileRowFlipped !lo !hi =
+   let !b0 = fromIntegral (((hi             ) .&. 1) `shiftL` 1 .|. ((lo             ) .&. 1)) :: Word16
+       !b1 = fromIntegral (((hi `shiftR` 1) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 1) .&. 1)) :: Word16
+       !b2 = fromIntegral (((hi `shiftR` 2) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 2) .&. 1)) :: Word16
+       !b3 = fromIntegral (((hi `shiftR` 3) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 3) .&. 1)) :: Word16
+       !b4 = fromIntegral (((hi `shiftR` 4) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 4) .&. 1)) :: Word16
+       !b5 = fromIntegral (((hi `shiftR` 5) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 5) .&. 1)) :: Word16
+       !b6 = fromIntegral (((hi `shiftR` 6) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 6) .&. 1)) :: Word16
+       !b7 = fromIntegral (((hi `shiftR` 7) .&. 1) `shiftL` 1 .|. ((lo `shiftR` 7) .&. 1)) :: Word16
+   in (b0 `shiftL` 14) .|. (b1 `shiftL` 12) .|. (b2 `shiftL` 10) .|. (b3 `shiftL` 8)
+      .|. (b4 `shiftL` 6) .|. (b5 `shiftL` 4) .|. (b6 `shiftL` 2) .|. b7
+
+ {-# INLINE extractPixel #-}
+ extractPixel :: Word16 -> Int -> Word8
+ extractPixel !packed !i = fromIntegral $ (packed `shiftR` (14 - i * 2)) .&. 3
+
+ {-# INLINE renderPixelDirect #-}
+ renderPixelDirect :: Bool -> Palette -> Int -> Int -> Word8 -> GBC ()
+ renderPixelDirect !hl !(c0,c1,c2,c3) !px !py !col = do
+   let !(Color a r g b) = case col of
+         0 -> c0
+         1 -> c1
+         2 -> c2
+         _ -> c3
+   writePixelDirect hl a r g b px py
+
+ {-# INLINE renderTileRow #-}
+ renderTileRow :: Bool -> Palette -> Word16 -> Int -> Int -> GBC ()
+ renderTileRow !hl !pal !packed !baseX !y = do
+   renderPixelDirect hl pal (baseX    ) y (extractPixel packed 0)
+   renderPixelDirect hl pal (baseX + 1) y (extractPixel packed 1)
+   renderPixelDirect hl pal (baseX + 2) y (extractPixel packed 2)
+   renderPixelDirect hl pal (baseX + 3) y (extractPixel packed 3)
+   renderPixelDirect hl pal (baseX + 4) y (extractPixel packed 4)
+   renderPixelDirect hl pal (baseX + 5) y (extractPixel packed 5)
+   renderPixelDirect hl pal (baseX + 6) y (extractPixel packed 6)
+   renderPixelDirect hl pal (baseX + 7) y (extractPixel packed 7)
+
+ -- Render sprite tile row: skips transparent (Col0) pixels and out-of-bounds
+ {-# INLINE renderSpriteTileRow #-}
+ renderSpriteTileRow :: Bool -> Palette -> Word16 -> Int -> Int -> GBC ()
+ renderSpriteTileRow !hl !pal !packed !baseX !y = do
+   renderSpritePixel hl pal packed baseX y 0
+   renderSpritePixel hl pal packed baseX y 1
+   renderSpritePixel hl pal packed baseX y 2
+   renderSpritePixel hl pal packed baseX y 3
+   renderSpritePixel hl pal packed baseX y 4
+   renderSpritePixel hl pal packed baseX y 5
+   renderSpritePixel hl pal packed baseX y 6
+   renderSpritePixel hl pal packed baseX y 7
+
+ {-# INLINE renderSpritePixel #-}
+ renderSpritePixel :: Bool -> Palette -> Word16 -> Int -> Int -> Int -> GBC ()
+ renderSpritePixel !hl !pal !packed !baseX !y !i = do
+   let !px = baseX + i
+       !col = extractPixel packed i
+   when (col /= 0 && px >= 0 && px < 160) $
+     renderPixelDirect hl pal px y col
+
+ {-# INLINE toGBColor #-}
  toGBColor :: Word8 -> GBColor
  toGBColor 0 = Col0
  toGBColor 1 = Col1
  toGBColor 2 = Col2
- toGBColor 3 = Col3
-
- renderPixel :: Palette -> Word8 -> Word8 -> GBColor -> GBC ()
- renderPixel pal posx posy gbcol = drawPixel $ Pixel (getColor pal gbcol) (fromIntegral posx) (fromIntegral posy)
-
- getColor :: Palette -> GBColor -> Color
- getColor (col0,col1,col2,col3) pixelNum = case pixelNum of
-   Col0 -> col0
-   Col1 -> col1
-   Col2 -> col2
-   Col3 -> col3
+ toGBColor _ = Col3
 
 
+ {-# INLINE getGBShade #-}
  getGBShade :: GBColor -> Color
  getGBShade num = case num of
    Col0 -> white
@@ -209,6 +281,7 @@ module GPU
    Col2 -> dark_gray
    Col3 -> black
 
+ {-# INLINE getGBPalette #-}
  getGBPalette :: Word8 -> Palette
  getGBPalette pal = ((getGBShade col0), (getGBShade col1), (getGBShade col2), (getGBShade col3))
    where col0 = toGBColor $ pal .&. 0x3
@@ -219,20 +292,29 @@ module GPU
  --Bit 0-4   : Red Intensity
  --Bit 5-9   : Green Intensity
  --Bit 10-14 : Blue Intensity
+ {-# INLINE getGBCColor #-}
  getGBCColor :: Word16 -> Color
  getGBCColor num =  Color 0xFF --A
                     (8 * (fromIntegral $ num .&. 0x1F)) --R
                     (8 * (fromIntegral $ (num `shiftR` 5) .&. 0x1F)) --G
                     (8 * (fromIntegral $ (num `shiftR` 10) .&. 0x1F)) --B
 
+ {-# INLINE getGBCPalette #-}
  getGBCPalette :: Word8 -> GBC Palette
- getGBCPalette num = do
-     let base = 8 * num
-     bytes <- sequence [readArr bgPalettes (base + i) | i <- [0 .. 7]]
-     let col0 = getGBCColor $ (fromIntegral (bytes !! 1) `shiftL` 8) .|. fromIntegral (bytes !! 0)
-     let col1 = getGBCColor $ (fromIntegral (bytes !! 3) `shiftL` 8) .|. fromIntegral (bytes !! 2)
-     let col2 = getGBCColor $ (fromIntegral (bytes !! 5) `shiftL` 8) .|. fromIntegral (bytes !! 4)
-     let col3 = getGBCColor $ (fromIntegral (bytes !! 7) `shiftL` 8) .|. fromIntegral (bytes !! 6)
+ getGBCPalette !num = do
+     let !base = 8 * num
+     !b0 <- readArr bgPalettes base
+     !b1 <- readArr bgPalettes (base + 1)
+     !b2 <- readArr bgPalettes (base + 2)
+     !b3 <- readArr bgPalettes (base + 3)
+     !b4 <- readArr bgPalettes (base + 4)
+     !b5 <- readArr bgPalettes (base + 5)
+     !b6 <- readArr bgPalettes (base + 6)
+     !b7 <- readArr bgPalettes (base + 7)
+     let !col0 = getGBCColor $ (fromIntegral b1 `shiftL` 8) .|. fromIntegral b0
+     let !col1 = getGBCColor $ (fromIntegral b3 `shiftL` 8) .|. fromIntegral b2
+     let !col2 = getGBCColor $ (fromIntegral b5 `shiftL` 8) .|. fromIntegral b4
+     let !col3 = getGBCColor $ (fromIntegral b7 `shiftL` 8) .|. fromIntegral b6
      return (col0, col1, col2, col3)
 
  lcdc_addr :: Word16
@@ -259,5 +341,71 @@ module GPU
  hdma5_addr :: Word16
  hdma5_addr = 0xFF55
 
- renderWindow line = return ()
- renderSprites line = return ()
+ renderWindow :: Bool -> Word8 -> GBC ()
+ renderWindow !hl !line = do
+   lcdc <- readArr memory lcdc_addr
+   when (testBit lcdc 5) $ do  -- Window enable
+     wy <- readArr memory 0xFF4A
+     when (line >= wy) $ do
+       wx <- readArr memory 0xFF4B
+       let !wxAdj = fromIntegral wx - 7 :: Int
+       gbc <- readRef gbc_mode
+       let !(tileStart, offset) = if testBit lcdc 4 then (0x8000 :: Word16, 0) else (0x8800 :: Word16, 128)
+       let !winStart = if testBit lcdc 6 then (0x9C00 :: Word16) else (0x9800 :: Word16)
+       let !winY = line - wy
+       let !yTileOffset = (fromIntegral (winY `div` 8) :: Word16) * 32
+       let !yByteOff = 2 * fromIntegral (winY `mod` 8) :: Word16
+       forM_ [0..20] $ \tileX -> do
+         let !tileAddr = winStart + yTileOffset + tileX
+         tileAttr <- if gbc then readArr vramBank tileAddr else return 0
+         tileNum <- (+ offset) <$> readArr memory tileAddr
+         let !yFlipped = if testBit tileAttr 6 then 2 * (7 - fromIntegral (winY `mod` 8)) else yByteOff
+         let !finalAddr = fromIntegral tileNum * 16 + tileStart + yFlipped
+         let tile_bank = if testBit tileAttr 3 then vramBank else memory
+         lo <- readArr tile_bank finalAddr
+         hi <- readArr tile_bank (finalAddr + 1)
+         let !packed = if testBit tileAttr 5
+                         then packTileRowFlipped lo hi
+                         else packTileRow lo hi
+         pal <- if gbc then getGBCPalette (tileAttr .&. 0x7) else getGBPalette <$> readArr memory bgp_addr
+         let !baseX = wxAdj + fromIntegral tileX * 8
+         renderTileRow hl pal packed baseX (fromIntegral line)
+
+ renderSprites :: Bool -> Word8 -> GBC ()
+ renderSprites !hl !line = do
+   lcdc <- readArr memory lcdc_addr
+   when (testBit lcdc 1) $ do  -- Sprite enable
+     let !spriteHeight = if testBit lcdc 2 then 16 else 8 :: Int
+     -- Scan OAM for sprites on this scanline (max 10 per line)
+     sprites <- foldM (\acc i -> do
+       let !oamAddr = 0xFE00 + i * 4
+       yPos <- readArr memory oamAddr
+       let !spriteY = fromIntegral yPos - 16 :: Int
+           !lineI = fromIntegral line :: Int
+       if lineI >= spriteY && lineI < spriteY + spriteHeight && length acc < 10
+         then do
+           xPos <- readArr memory (oamAddr + 1)
+           tileN <- readArr memory (oamAddr + 2)
+           attrs <- readArr memory (oamAddr + 3)
+           return ((xPos, spriteY, tileN, attrs) : acc)
+         else return acc
+       ) [] [0..39 :: Word16]
+     -- Render sprites in reverse order (lower OAM index = higher priority, drawn last)
+     forM_ sprites $ \(xPos, spriteY, tileN, attrs) -> do
+       let !spriteX = fromIntegral xPos - 8 :: Int
+           !lineI = fromIntegral line :: Int
+           !yFlip = testBit attrs 6
+           !xFlip = testBit attrs 5
+           -- For 8x16 mode, mask off bit 0 of tile number
+           !tileNum = if spriteHeight == 16 then tileN .&. 0xFE else tileN
+           !row = lineI - spriteY
+           !effectiveRow = if yFlip then spriteHeight - 1 - row else row
+           !tileAddr = 0x8000 + fromIntegral tileNum * 16 + fromIntegral effectiveRow * 2 :: Word16
+       lo <- readArr memory tileAddr
+       hi <- readArr memory (tileAddr + 1)
+       let !packed = if xFlip
+                       then packTileRowFlipped lo hi
+                       else packTileRow lo hi
+       -- Use OBP0 or OBP1 based on bit 4
+       pal <- getGBPalette <$> readArr memory (if testBit attrs 4 then 0xFF49 else 0xFF48)
+       renderSpriteTileRow hl pal packed spriteX (fromIntegral line)

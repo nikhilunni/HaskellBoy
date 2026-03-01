@@ -123,21 +123,25 @@ module Memory
                  , ch4EnvelopeVolume = ch4EnvelopeVolume'
                  }
 
+ {-# INLINE readArr #-}
  readArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> GBC Word8
  readArr accessor i = GBC $ do
    arr <- asks accessor
    lift $ stToIO $ readArray arr i
 
+ {-# INLINE writeArr #-}
  writeArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> Word8 -> GBC ()
  writeArr accessor i val = GBC $ do
    arr <- asks accessor
    lift $ stToIO $ writeArray arr i val
 
+ {-# INLINE readRef #-}
  readRef :: (Memory RealWorld -> STRef RealWorld e) -> GBC e
  readRef accessor = GBC $ do
    ref <- asks accessor
    lift $ stToIO $ readSTRef ref
 
+ {-# INLINE writeRef #-}
  writeRef :: (Memory RealWorld -> STRef RealWorld e) -> e -> GBC ()
  writeRef accessor val = GBC $ do
    ref <- asks accessor

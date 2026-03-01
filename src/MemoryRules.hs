@@ -18,6 +18,7 @@ module MemoryRules
  import qualified GPU
  import qualified APU
 
+ {-# INLINE tickMCycle #-}
  tickMCycle :: GBC ()
  tickMCycle = do
    test <- readRef testMode

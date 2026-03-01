@@ -5,6 +5,7 @@ module CPU where
  import Data.Bits ( (.&.) , (.|.), clearBit, setBit, bit, xor,
                     shiftL, shiftR, rotateR, rotateL, Bits, complement,
                     testBit, countTrailingZeros)
+ import Data.Array (Array, listArray, (!))
 
  import Control.Conditional hiding (when)
  import Control.Monad
@@ -1036,11 +1037,17 @@ module CPU where
                  2,1,1,1,1,1,2,1,2,1,3,1,1,1,2,1,         --E
                  2,1,1,1,1,1,2,1,2,1,3,1,1,1,2,1]         --F
 
+ opcodeTable :: Array Word8 (GBC Instruction)
+ opcodeTable = listArray (0, 255) opcodeLookups
+
+ cbOpcodeTable :: Array Word8 (GBC Instruction)
+ cbOpcodeTable = listArray (0, 255) cbOpcodeLookups
+
  decodeInstruction :: Opcode -> GBC Instruction
- decodeInstruction op = opcodeLookups !! (fromIntegral op)
+ decodeInstruction op = opcodeTable ! op
 
  decodeCBInstruction :: Opcode -> GBC Instruction
- decodeCBInstruction op = cbOpcodeLookups !! (fromIntegral op)
+ decodeCBInstruction op = cbOpcodeTable ! op
 
  executeInstruction :: Instruction -> GBC ()
  executeInstruction instr = case instr of

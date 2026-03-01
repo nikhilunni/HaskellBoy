@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Types
  where
@@ -104,10 +105,10 @@ module Types
               | MBC5
               | HuC1
 
- data Color = Color Word8 Word8 Word8 Word8 deriving Show --A/R/G/B
+ data Color = Color !Word8 !Word8 !Word8 !Word8 deriving Show --A/R/G/B
  data Pixel = Pixel Color Integer Integer deriving Show -- Color/X/Y
  type Palette = (Color, Color, Color, Color) --Color 0,1,2,3
- data GBColor = Col0 | Col1 | Col2 | Col3
+ data GBColor = Col0 | Col1 | Col2 | Col3 deriving (Eq)
 
  white :: Color
  white      = Color 0xFF 0xFF 0xFF 0xFF

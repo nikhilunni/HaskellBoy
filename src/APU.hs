@@ -18,6 +18,7 @@ module APU
  -- Steps 0,2,4,6: length counters
  -- Steps 2,6: sweep (ch1)
  -- Step 7: envelopes (ch1,2,4)
+ {-# INLINE tickAPU #-}
  tickAPU :: Cycles -> GBC ()
  tickAPU delta = do
    power <- readRef apuPower

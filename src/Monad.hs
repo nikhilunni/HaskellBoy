@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module Monad
         where
 
@@ -11,7 +13,7 @@ module Monad
 
  import Data.Word
  import Data.Bits
- import Data.Array.ST (writeArray, getElems)
+ import Data.Array.ST (writeArray, readArray, getElems)
  import qualified Data.ByteString as BS
 
  import System.Exit
@@ -35,17 +37,35 @@ module Monad
  drawPixel :: Pixel -> GBC ()
  drawPixel (Pixel (Color a r g b) x y) = do
    hl <- readRef headless
-   when (not hl) $ GBC $ do
-     mem <- ask
-     rendererDrawColor (renderer mem) $= V4 r g b a
-     drawPoint (renderer mem) (P $ V2 (CInt $ fromIntegral x) (CInt $ fromIntegral y))
+   when (not hl) $ do
+     GBC $ do
+       mem <- ask
+       rendererDrawColor (renderer mem) $= V4 r g b a
+       drawPoint (renderer mem) (P $ V2 (CInt $ fromIntegral x) (CInt $ fromIntegral y))
      -- Write BGR to framebuffer for BMP compatibility (guard out-of-bounds from scrolling)
-     when (x >= 0 && x < 160 && y >= 0 && y < 144) $ do
+     when (x >= 0 && x < 160 && y >= 0 && y < 144) $ GBC $ do
+       mem <- ask
        let idx = (fromIntegral y * 160 + fromIntegral x) * 3
        lift $ stToIO $ do
          writeArray (framebuffer mem) idx b
          writeArray (framebuffer mem) (idx + 1) g
          writeArray (framebuffer mem) (idx + 2) r
+
+ {-# INLINE writePixelDirect #-}
+ writePixelDirect :: Bool -> Word8 -> Word8 -> Word8 -> Word8 -> Int -> Int -> GBC ()
+ writePixelDirect True _ _ _ _ _ _ = return ()
+ writePixelDirect False !a !r !g !b !x !y = do
+   GBC $ do
+     mem <- ask
+     rendererDrawColor (renderer mem) $= V4 r g b a
+     drawPoint (renderer mem) (P $ V2 (CInt $ fromIntegral x) (CInt $ fromIntegral y))
+   when (x >= 0 && x < 160 && y >= 0 && y < 144) $ GBC $ do
+     mem <- ask
+     let !idx = (y * 160 + x) * 3
+     lift $ stToIO $ do
+       writeArray (framebuffer mem) idx b
+       writeArray (framebuffer mem) (idx + 1) g
+       writeArray (framebuffer mem) (idx + 2) r
 
  showScreen :: GBC ()
  showScreen = do
