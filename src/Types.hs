@@ -31,7 +31,7 @@ module Types
  eNum :: (Enum a, Num c) => a -> c
  eNum = fromIntegral . fromEnum
 
- data GPUMode = HBlankMode | VBlankMode | OAMSearch | Transfer deriving (Enum, Show)
+ data GPUMode = HBlankMode | VBlankMode | OAMSearch | Transfer deriving (Eq, Enum, Show)
 
  data Interrupt = VBlank | STAT | Timer | Serial | Joypad deriving (Show, Enum)
 

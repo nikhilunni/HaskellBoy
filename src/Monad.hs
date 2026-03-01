@@ -71,6 +71,14 @@ module Monad
        writeArray (framebuffer mem) (idx + 1) g
        writeArray (framebuffer mem) (idx + 2) r
 
+ clearScreen :: GBC ()
+ clearScreen = do
+   hl <- readRef headless
+   when (not hl) $ GBC $ do
+     mem <- ask
+     rendererDrawColor (renderer mem) $= V4 255 255 255 255
+     clear (renderer mem)
+
  showScreen :: GBC ()
  showScreen = do
    hl <- readRef headless

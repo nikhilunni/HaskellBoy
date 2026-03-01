@@ -80,57 +80,71 @@ module GPU
  tick :: Cycles -> GBC ()
  tick delta = do
    tickTimer delta
-   lineNum <- readRef line
-   scanMode <- readRef mode
-   counter <- readRef gpu_cycles
-   let total = counter + delta
-   writeRef gpu_cycles total
-   case scanMode of
-     HBlankMode -> do
-       when (total >= 456) $ do --End of HBlank period
-         writeRef gpu_cycles $ total - 456
-         writeRef line $ lineNum + 1
-         writeArr memory ly_addr $ lineNum + 1
-         compareLY_LYC
+   -- When LCD is disabled (LCDC bit 7 = 0), the GPU mode state machine
+   -- stops and VRAM/OAM are freely accessible. Only run timers.
+   lcdc <- readArr memory lcdc_addr
+   if not (testBit lcdc 7)
+     then do
+       -- LCD off: force HBlank so VRAM/OAM writes aren't blocked
+       m <- readRef mode
+       when (m /= HBlankMode) $ do
+         lcdModeSwitch HBlankMode
+         writeRef line 0
+         writeArr memory ly_addr 0
+         writeRef gpu_cycles 0
+     else do
+       lineNum <- readRef line
+       scanMode <- readRef mode
+       counter <- readRef gpu_cycles
+       let total = counter + delta
+       writeRef gpu_cycles total
+       case scanMode of
+         HBlankMode -> do
+           when (total >= 456) $ do --End of HBlank period
+             writeRef gpu_cycles $ total - 456
+             writeRef line $ lineNum + 1
+             writeArr memory ly_addr $ lineNum + 1
+             compareLY_LYC
 
-         --TODO : HDMA transfer
-         if (lineNum + 1 == 144)
-           then do requestInterrupt VBlank
-                   lcdModeSwitch VBlankMode
-                   showScreen
-                   pollSDLEvents
-                   queueAudioSamples
-                   limitFrameRate
-                   dir <- readRef screenshotDir
-                   case dir of
-                     Just d  -> captureScreenshot (d ++ "/screenshot.bmp")
-                     Nothing -> return ()
-           else do lcdModeSwitch OAMSearch
+             --TODO : HDMA transfer
+             if (lineNum + 1 == 144)
+               then do requestInterrupt VBlank
+                       lcdModeSwitch VBlankMode
+                       showScreen
+                       pollSDLEvents
+                       queueAudioSamples
+                       limitFrameRate
+                       dir <- readRef screenshotDir
+                       case dir of
+                         Just d  -> captureScreenshot (d ++ "/screenshot.bmp")
+                         Nothing -> return ()
+               else do lcdModeSwitch OAMSearch
 
-     VBlankMode -> do
-       if (lineNum + 1 < 153)
-          then do when (total >= 456) $ do --End of line
-                    writeRef gpu_cycles $ total - 456
-                    writeRef line $ lineNum + 1
-                    writeArr memory ly_addr $ lineNum + 1
-                    compareLY_LYC
-          else do ly <- readArr memory ly_addr
-                  when (total >= 8 && ly == 153) $ do
-                    writeArr memory ly_addr 0 --LY value is reset early, for whatever reason...
-                    compareLY_LYC
-                  when (total >= 456) $ do --Last line of VBlank is over
-                    writeRef gpu_cycles $ total - 456
-                    writeRef line 0
-                    lcdModeSwitch OAMSearch
+         VBlankMode -> do
+           if (lineNum + 1 < 153)
+              then do when (total >= 456) $ do --End of line
+                        writeRef gpu_cycles $ total - 456
+                        writeRef line $ lineNum + 1
+                        writeArr memory ly_addr $ lineNum + 1
+                        compareLY_LYC
+              else do ly <- readArr memory ly_addr
+                      when (total >= 8 && ly == 153) $ do
+                        writeArr memory ly_addr 0 --LY value is reset early, for whatever reason...
+                        compareLY_LYC
+                      when (total >= 456) $ do --Last line of VBlank is over
+                        writeRef gpu_cycles $ total - 456
+                        writeRef line 0
+                        clearScreen
+                        lcdModeSwitch OAMSearch
 
-     OAMSearch -> when (total >= 80) $ (writeRef transferred False) >> lcdModeSwitch Transfer
-     Transfer -> do
-       scanned <- readRef transferred
-       ly <- readArr memory ly_addr
-       when (not scanned && total >= (if ly == 0 then 160 else 48)) $ do
-         writeRef transferred True
-         scanLine lineNum
-       when (total >= 172) $ lcdModeSwitch HBlankMode
+         OAMSearch -> when (total >= 80) $ (writeRef transferred False) >> lcdModeSwitch Transfer
+         Transfer -> do
+           scanned <- readRef transferred
+           ly <- readArr memory ly_addr
+           when (not scanned && total >= (if ly == 0 then 160 else 48)) $ do
+             writeRef transferred True
+             scanLine lineNum
+           when (total >= 252) $ lcdModeSwitch HBlankMode
 
 
 
