@@ -4,14 +4,14 @@ module CPU where
  import Data.Int (Int8)
  import Data.Bits ( (.&.) , (.|.), clearBit, setBit, bit, xor,
                     shiftL, shiftR, rotateR, rotateL, Bits, complement,
-                    testBit)
+                    testBit, countTrailingZeros)
 
  import Control.Conditional hiding (when)
  import Control.Monad
 
  import Types
  import Memory
- import MemoryRules
+ import MemoryRules (readMem, writeMem, tickMCycle)
  import Monad
 
  data Instruction =
@@ -347,19 +347,19 @@ module CPU where
  (.^.) = xor
 ------------------
 
- data Interrupt = VBlank | STAT | Timer | Serial | Joypad deriving (Show, Enum)
+ -- Interrupt type is defined in Types.hs
 
  loadIF :: GBC Word8
- loadIF = readMem 0xFF0F
+ loadIF = readArr memory 0xFF0F
 
  storeIF :: Word8 -> GBC ()
- storeIF w = writeMem 0xFF0F w
+ storeIF w = writeArr memory 0xFF0F w
 
  loadIE :: GBC Word8
- loadIE = readMem 0xFFFF
+ loadIE = readArr memory 0xFFFF
 
  storeIE :: Word8 -> GBC ()
- storeIE w = writeMem 0xFFFF w
+ storeIE w = writeArr memory 0xFFFF w
 
  interrupts       = [VBlank, STAT, Timer, Serial, Joypad]
  interruptOffsets = [R40,    R48,  R50,   R58,    R60]
@@ -367,26 +367,49 @@ module CPU where
  getInterrupts :: Word8 -> [Interrupt]
  getInterrupts flags = filter (\a -> isBitSet flags (fromEnum a)) interrupts
 
+ interruptVector :: Interrupt -> Word16
+ interruptVector VBlank  = 0x0040
+ interruptVector STAT    = 0x0048
+ interruptVector Timer   = 0x0050
+ interruptVector Serial  = 0x0058
+ interruptVector Joypad  = 0x0060
+
  processInterrupt :: Interrupt -> GBC ()
  processInterrupt interrupt = do
-   executeInstruction DI
-   (flip clearBit (fromEnum interrupt)) <$> loadIF >>= storeIF --Unset corresponding bit in IF flag
    writeRef ime False
-   executeInstruction $ RSTn $ interruptOffsets !! (fromEnum interrupt) --Execute interrupt handler code
+   writeRef halt False
+   -- Clear the IF bit for this interrupt
+   flagIF <- loadIF
+   storeIF $ clearBit flagIF (fromEnum interrupt)
+   -- 2 internal M-cycles (NOP-like delay)
+   tickMCycle
+   tickMCycle
+   -- Push current PC to stack (2 writeMem calls, each ticks 1 M-cycle)
+   pcVal <- readRef pc
+   spVal <- readRef sp
+   let newSp = spVal - 2
+   writeRef sp newSp
+   writeMem (newSp + 1) (fromIntegral $ pcVal `shiftR` 8)
+   writeMem newSp (fromIntegral $ pcVal .&. 0xFF)
+   -- 1 internal M-cycle for vector fetch
+   tickMCycle
+   -- Jump to interrupt vector
+   writeRef pc (interruptVector interrupt)
 
- --Need to reset IME after handling each interrupt
  handleInterrupts :: GBC ()
  handleInterrupts = do
    flagIF <- loadIF
    flagIE <- loadIE
-   let pending = flagIF .&. flagIE
+   let pending = flagIF .&. flagIE .&. 0x1F
    when (pending /= 0) $ writeRef halt False
-   whenM (readRef ime) $ do
-     sequence_ $ processInterrupt <$> (getInterrupts pending)
+   imeFlag <- readRef ime
+   when (imeFlag && pending /= 0) $ do
+     -- Handle highest priority interrupt (lowest bit)
+     let b = countTrailingZeros pending
+     processInterrupt (toEnum b)
 
 
- requestInterrupt :: Interrupt -> GBC ()
- requestInterrupt interrupt = (flip setBit (fromEnum interrupt)) <$> loadIF >>= storeIF
+ -- requestInterrupt is now in Memory.hs
 ------------------
 
  streamNextInstruction :: GBC (Instruction, Cycles)
@@ -394,6 +417,10 @@ module CPU where
    pcVal <- readRef pc
    next <- readMem pcVal
    writeRef pc (pcVal + 1)
+   bug <- readRef haltBug
+   when bug $ do
+     writeRef haltBug False
+     writeRef pc pcVal  -- Don't advance: re-read this byte next time
    if (next == 0xCB) then loadCBInstr else loadNormalInstr next
 
   where loadNormalInstr next = do
@@ -967,10 +994,10 @@ module CPU where
                 4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --9
                 4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --A
                 4,4,4,4,4,4,8,4,4,4,4,4,4,4,8,4,          --B
-                8,12,12,12,12,16,8,32,8,8,12,0,12,12,8,32,--C
-                8,12,12,0,12,16,8,32,8,8,12,0,12,0,8,32,  --D
-                12,12,8,0,0,16,8,32,16,4,16,0,0,0,8,32,   --E
-                12,12,8,4,0,16,8,32,12,8,16,4,0,0,8,32]   --F
+                8,12,12,16,12,16,8,16,8,16,12,0,12,24,8,16,--C
+                8,12,12,0,12,16,8,16,8,16,12,0,12,0,8,16,  --D
+                12,12,8,0,0,16,8,16,16,4,16,0,0,0,8,16,   --E
+                12,12,8,4,0,16,8,16,12,8,16,4,0,0,8,16]   --F
 
 
  cbCycleLookup :: [Cycles]
@@ -1052,7 +1079,7 @@ module CPU where
 --16-bit loads
    LDrrnn reg1 reg2 imm16 -> writeReg2 reg1 reg2 imm16
    LDSPnn imm16 -> writeRef sp imm16
-   LDSPHL -> readReg2 H L >>= writeRef sp
+   LDSPHL -> do readReg2 H L >>= writeRef sp; tickMCycle
    LDHLSPn imm -> do
      spVal <- readRef sp
      let imm16 = fromIntegral imm :: Word16
@@ -1063,11 +1090,13 @@ module CPU where
                   (FlagN, Zero),
                   (FlagH, toBit $ (spVal .&. 0x0F) + (imm16 .&. 0x0F) > 0x0F),
                   (FlagC, toBit $ (spVal .&. 0xFF) + imm16 > 0xFF)]
+     tickMCycle  -- 1 internal M-cycle
    LDnnSP imm16 -> do
      spVal <- readRef sp
      writeMem imm16 (fromIntegral $ spVal .&. 0xFF)
      writeMem (imm16 + 1) (fromIntegral $ spVal `shiftR` 8)
    PUSHrr reg1 reg2 -> do --left-most byte => SP-1, right-most byte => SP-2
+     tickMCycle  -- 1 internal M-cycle
      spVal <- readRef sp
      readReg reg1 >>= writeMem ((spVal-1) .&. 0xFFFF)
      readReg reg2 >>= writeMem ((spVal-2) .&. 0xFFFF)
@@ -1161,6 +1190,7 @@ module CPU where
      updateFlags [(FlagN, Zero),
                   (FlagH, toBit $ sum .&. 0x0FFF < hlVal .&. 0x0FFF),
                   (FlagC, toBit $ sum < hlVal)]
+     tickMCycle  -- 1 internal M-cycle
    ADDHLSP -> do
      regVal <- readRef sp
      hlVal  <- readReg2 H L
@@ -1169,6 +1199,7 @@ module CPU where
      updateFlags [(FlagN, Zero),
                   (FlagH, toBit $ sum .&. 0x0FFF < hlVal .&. 0x0FFF),
                   (FlagC, toBit $ sum < hlVal)]
+     tickMCycle  -- 1 internal M-cycle
    ADDSPn imm -> do
      spVal <- readRef sp
      let imm16 = fromIntegral imm :: Word16
@@ -1179,10 +1210,12 @@ module CPU where
                   (FlagN, Zero),
                   (FlagH, toBit $ (spVal .&. 0x0F) + (imm16 .&. 0x0F) > 0x0F),
                   (FlagC, toBit $ (spVal .&. 0xFF) + imm16 > 0xFF)]
-   INCrr reg1 reg2 -> fmap (+1) (readReg2 reg1 reg2) >>= writeReg2 reg1 reg2
-   INCSP -> fmap (+1) (readRef sp) >>= writeRef sp
-   DECrr reg1 reg2 -> fmap (flip (-) 1) (readReg2 reg1 reg2) >>= writeReg2 reg1 reg2
-   DECSP -> fmap (flip (-) 1) (readRef sp) >>= writeRef sp
+     tickMCycle  -- 2 internal M-cycles
+     tickMCycle
+   INCrr reg1 reg2 -> do fmap (+1) (readReg2 reg1 reg2) >>= writeReg2 reg1 reg2; tickMCycle
+   INCSP -> do fmap (+1) (readRef sp) >>= writeRef sp; tickMCycle
+   DECrr reg1 reg2 -> do fmap (flip (-) 1) (readReg2 reg1 reg2) >>= writeReg2 reg1 reg2; tickMCycle
+   DECSP -> do fmap (flip (-) 1) (readRef sp) >>= writeRef sp; tickMCycle
    SWAPr reg -> do
      regVal <- readReg reg
      let out = ((regVal .&. 0xF0) `shiftR` 4) + ((regVal .&. 0x0F) `shiftL` 4)
@@ -1235,7 +1268,14 @@ module CPU where
                  (FlagH, Zero),
                  (FlagC, One)]
    NOP  -> return ()
-   HALT_INSTR -> writeRef halt True
+   HALT_INSTR -> do
+     imeFlag <- readRef ime
+     flagIF <- readMem 0xFF0F
+     flagIE <- readMem 0xFFFF
+     let pending = flagIF .&. flagIE .&. 0x1F
+     if not imeFlag && pending /= 0
+       then writeRef haltBug True  -- HALT bug: don't halt, repeat next byte
+       else writeRef halt True
    STOP -> return () --TODO
    DI   -> writeRef ime False
    EI   -> writeRef imePending True
@@ -1424,18 +1464,26 @@ module CPU where
      writeMem hl $ mem `clearBit` (fromIntegral imm)
    JPnn imm -> do
      writeRef pc imm
+     tickMCycle  -- 1 internal M-cycle
    JPccnn cond imm -> do
-     ifM (testFlagCondition cond) (writeRef pc imm) (return ())
+     toJump <- testFlagCondition cond
+     when toJump $ do
+       writeRef pc imm
+       tickMCycle  -- 1 internal M-cycle (taken branch)
    JPHL -> writeRef pc =<< (readReg2 H L)
    JRn imm -> do
      currAddr <- readRef pc
      writeRef pc $ currAddr + fromIntegral (fromIntegral imm :: Int8)
+     tickMCycle  -- 1 internal M-cycle
    JRccn cond imm -> do
      currAddr <- readRef pc
      toJump <- testFlagCondition cond
      let jumpAddr = currAddr + fromIntegral (fromIntegral imm :: Int8)
-     if toJump then writeRef pc jumpAddr else return ()
+     when toJump $ do
+       writeRef pc jumpAddr
+       tickMCycle  -- 1 internal M-cycle (taken branch)
    CALLnn imm -> do
+     tickMCycle  -- 1 internal M-cycle
      spVal <- readRef sp
      pcVal <- readRef pc
      writeMem ((spVal-1) .&. 0xFFFF) (fromIntegral $ pcVal `shiftR` 8)
@@ -1444,8 +1492,9 @@ module CPU where
      writeRef pc imm
    CALLccnn cond imm -> do
      toJump <- testFlagCondition cond
-     if toJump then executeInstruction $ CALLnn imm else return ()
+     when toJump $ executeInstruction $ CALLnn imm
    RSTn rAddress -> do
+     tickMCycle  -- 1 internal M-cycle
      spVal <- readRef sp
      pcVal <- readRef pc
      writeMem ((spVal-1) .&. 0xFFFF) (fromIntegral $ pcVal `shiftR` 8)
@@ -1459,9 +1508,11 @@ module CPU where
      let jumpAddr = ( (fromIntegral upperByte) `shiftL` 8 ) + (fromIntegral lowerByte)
      writeRef sp $ spVal + 2
      writeRef pc jumpAddr
+     tickMCycle  -- 1 internal M-cycle
    RETcc cond -> do
+     tickMCycle  -- 1 internal M-cycle (condition check)
      toJump <- testFlagCondition cond
-     if toJump then executeInstruction RET else return ()
+     when toJump $ executeInstruction RET
    RETI -> do
      writeRef ime True
      executeInstruction RET

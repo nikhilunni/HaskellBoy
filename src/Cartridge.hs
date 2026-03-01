@@ -6,6 +6,7 @@ module Cartridge
 
  import qualified Data.ByteString as C
 
+ import Control.Monad (when)
  import Data.Word
 
  import Types
@@ -41,6 +42,11 @@ module Cartridge
          addr    = fromIntegral (i `mod` 0x4000) + 0x4000 :: Word16
      writeArr romBanks (bankNum, addr) c
      ) $ zip remaining [0::Int ..]
+   -- Detect CGB mode from cartridge header byte 0x143
+   when (length ws > 0x143) $ do
+     let cgbFlag = ws !! 0x143
+     when (cgbFlag == 0x80 || cgbFlag == 0xC0) $
+       writeRef gbc_mode True
 
  loadBootRom :: [Word8] -> GBC ()
  loadBootRom bootRom = do

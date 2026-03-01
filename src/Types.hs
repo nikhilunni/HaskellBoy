@@ -31,8 +31,10 @@ module Types
 
  data GPUMode = HBlankMode | VBlankMode | OAMSearch | Transfer deriving (Enum, Show)
 
+ data Interrupt = VBlank | STAT | Timer | Serial | Joypad deriving (Show, Enum)
+
  data Memory s = Memory { memory :: STUArray s Word16 Word8
-                        , bgPalettes :: STArray s Word8 Word8
+                        , bgPalettes :: STUArray s Word8 Word8
                         , registers :: STUArray s Word8 Word8
                         , romBanks  :: STUArray s (Word8,Word16) Word8
                         , vramBank :: STUArray s Word16 Word8
@@ -61,6 +63,35 @@ module Types
                         , serialBuffer :: STRef s String --Accumulated serial output
                         , timerCounter :: STRef s Word16 --Internal timer cycle counter
                         , divCounter :: STRef s Word16 --Internal DIV cycle counter
+                        , haltBug :: STRef s Bool --HALT bug: repeat next byte
+                        , numRomBanks :: STRef s Word8 --Total ROM bank count
+                        , branchCycles :: STRef s Word16 --Extra cycles for taken branches
+                        , mCycleCounter :: STRef s Word64 --Total M-cycle counter
+                        -- APU state
+                        , apuPower :: STRef s Bool
+                        , apuFrameSeqStep :: STRef s Word8    -- 0-7
+                        , apuFrameSeqCounter :: STRef s Word16 -- T-cycle counter for 512 Hz
+                        -- Channel 1 (pulse + sweep)
+                        , ch1Active :: STRef s Bool
+                        , ch1LengthCounter :: STRef s Word16
+                        , ch1EnvelopeTimer :: STRef s Word8
+                        , ch1EnvelopeVolume :: STRef s Word8
+                        , ch1SweepTimer :: STRef s Word8
+                        , ch1SweepEnabled :: STRef s Bool
+                        , ch1SweepShadow :: STRef s Word16
+                        -- Channel 2 (pulse)
+                        , ch2Active :: STRef s Bool
+                        , ch2LengthCounter :: STRef s Word16
+                        , ch2EnvelopeTimer :: STRef s Word8
+                        , ch2EnvelopeVolume :: STRef s Word8
+                        -- Channel 3 (wave)
+                        , ch3Active :: STRef s Bool
+                        , ch3LengthCounter :: STRef s Word16
+                        -- Channel 4 (noise)
+                        , ch4Active :: STRef s Bool
+                        , ch4LengthCounter :: STRef s Word16
+                        , ch4EnvelopeTimer :: STRef s Word8
+                        , ch4EnvelopeVolume :: STRef s Word8
                         }
 
  data CartMode = DMGMode | GBCMode

@@ -7,7 +7,7 @@ module Memory
  import Data.Word
  import Data.Array.ST
  import Data.STRef
- import Data.Bits
+ import Data.Bits ((.&.), (.|.), setBit, shiftL, shiftR)
 
  import Types
 
@@ -43,6 +43,30 @@ module Memory
    serialBuffer' <- newSTRef []
    timerCounter' <- newSTRef 0
    divCounter' <- newSTRef 0
+   haltBug' <- newSTRef False
+   numRomBanks' <- newSTRef numRomBanks
+   branchCycles' <- newSTRef 0
+   mCycleCounter' <- newSTRef 0
+   apuPower' <- newSTRef False
+   apuFrameSeqStep' <- newSTRef 0
+   apuFrameSeqCounter' <- newSTRef 0
+   ch1Active' <- newSTRef False
+   ch1LengthCounter' <- newSTRef 0
+   ch1EnvelopeTimer' <- newSTRef 0
+   ch1EnvelopeVolume' <- newSTRef 0
+   ch1SweepTimer' <- newSTRef 0
+   ch1SweepEnabled' <- newSTRef False
+   ch1SweepShadow' <- newSTRef 0
+   ch2Active' <- newSTRef False
+   ch2LengthCounter' <- newSTRef 0
+   ch2EnvelopeTimer' <- newSTRef 0
+   ch2EnvelopeVolume' <- newSTRef 0
+   ch3Active' <- newSTRef False
+   ch3LengthCounter' <- newSTRef 0
+   ch4Active' <- newSTRef False
+   ch4LengthCounter' <- newSTRef 0
+   ch4EnvelopeTimer' <- newSTRef 0
+   ch4EnvelopeVolume' <- newSTRef 0
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -73,6 +97,30 @@ module Memory
                  , serialBuffer = serialBuffer'
                  , timerCounter = timerCounter'
                  , divCounter = divCounter'
+                 , haltBug = haltBug'
+                 , numRomBanks = numRomBanks'
+                 , branchCycles = branchCycles'
+                 , mCycleCounter = mCycleCounter'
+                 , apuPower = apuPower'
+                 , apuFrameSeqStep = apuFrameSeqStep'
+                 , apuFrameSeqCounter = apuFrameSeqCounter'
+                 , ch1Active = ch1Active'
+                 , ch1LengthCounter = ch1LengthCounter'
+                 , ch1EnvelopeTimer = ch1EnvelopeTimer'
+                 , ch1EnvelopeVolume = ch1EnvelopeVolume'
+                 , ch1SweepTimer = ch1SweepTimer'
+                 , ch1SweepEnabled = ch1SweepEnabled'
+                 , ch1SweepShadow = ch1SweepShadow'
+                 , ch2Active = ch2Active'
+                 , ch2LengthCounter = ch2LengthCounter'
+                 , ch2EnvelopeTimer = ch2EnvelopeTimer'
+                 , ch2EnvelopeVolume = ch2EnvelopeVolume'
+                 , ch3Active = ch3Active'
+                 , ch3LengthCounter = ch3LengthCounter'
+                 , ch4Active = ch4Active'
+                 , ch4LengthCounter = ch4LengthCounter'
+                 , ch4EnvelopeTimer = ch4EnvelopeTimer'
+                 , ch4EnvelopeVolume = ch4EnvelopeVolume'
                  }
 
  readArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> GBC Word8
@@ -125,6 +173,11 @@ module Memory
  writeR reg1 reg2 val = do
    writeReg reg1 (fromIntegral $ val `shiftR` 8)
    writeReg reg2 (fromIntegral $ val .&. 0xFF)
+
+ requestInterrupt :: Interrupt -> GBC ()
+ requestInterrupt interrupt = do
+   flagIF <- readArr memory 0xFF0F
+   writeArr memory 0xFF0F (setBit flagIF (fromEnum interrupt))
 
  boot_rom :: [Word8]
  boot_rom = [0x31, 0xfe, 0xff, 0xaf, 0x21, 0xff, 0x9f, 0x32, 0xcb, 0x7c, 0x20, 0xfb,
@@ -180,6 +233,30 @@ module Memory
    serialBuffer' <- newSTRef []
    timerCounter' <- newSTRef 0
    divCounter' <- newSTRef 0
+   haltBug' <- newSTRef False
+   numRomBanks' <- newSTRef 2
+   branchCycles' <- newSTRef 0
+   mCycleCounter' <- newSTRef 0
+   apuPower' <- newSTRef False
+   apuFrameSeqStep' <- newSTRef 0
+   apuFrameSeqCounter' <- newSTRef 0
+   ch1Active' <- newSTRef False
+   ch1LengthCounter' <- newSTRef 0
+   ch1EnvelopeTimer' <- newSTRef 0
+   ch1EnvelopeVolume' <- newSTRef 0
+   ch1SweepTimer' <- newSTRef 0
+   ch1SweepEnabled' <- newSTRef False
+   ch1SweepShadow' <- newSTRef 0
+   ch2Active' <- newSTRef False
+   ch2LengthCounter' <- newSTRef 0
+   ch2EnvelopeTimer' <- newSTRef 0
+   ch2EnvelopeVolume' <- newSTRef 0
+   ch3Active' <- newSTRef False
+   ch3LengthCounter' <- newSTRef 0
+   ch4Active' <- newSTRef False
+   ch4LengthCounter' <- newSTRef 0
+   ch4EnvelopeTimer' <- newSTRef 0
+   ch4EnvelopeVolume' <- newSTRef 0
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -210,6 +287,30 @@ module Memory
                  , serialBuffer = serialBuffer'
                  , timerCounter = timerCounter'
                  , divCounter = divCounter'
+                 , haltBug = haltBug'
+                 , numRomBanks = numRomBanks'
+                 , branchCycles = branchCycles'
+                 , mCycleCounter = mCycleCounter'
+                 , apuPower = apuPower'
+                 , apuFrameSeqStep = apuFrameSeqStep'
+                 , apuFrameSeqCounter = apuFrameSeqCounter'
+                 , ch1Active = ch1Active'
+                 , ch1LengthCounter = ch1LengthCounter'
+                 , ch1EnvelopeTimer = ch1EnvelopeTimer'
+                 , ch1EnvelopeVolume = ch1EnvelopeVolume'
+                 , ch1SweepTimer = ch1SweepTimer'
+                 , ch1SweepEnabled = ch1SweepEnabled'
+                 , ch1SweepShadow = ch1SweepShadow'
+                 , ch2Active = ch2Active'
+                 , ch2LengthCounter = ch2LengthCounter'
+                 , ch2EnvelopeTimer = ch2EnvelopeTimer'
+                 , ch2EnvelopeVolume = ch2EnvelopeVolume'
+                 , ch3Active = ch3Active'
+                 , ch3LengthCounter = ch3LengthCounter'
+                 , ch4Active = ch4Active'
+                 , ch4LengthCounter = ch4LengthCounter'
+                 , ch4EnvelopeTimer = ch4EnvelopeTimer'
+                 , ch4EnvelopeVolume = ch4EnvelopeVolume'
                  }
 
  newHeadless :: Word8 -> IO (Memory RealWorld)
@@ -242,6 +343,30 @@ module Memory
    serialBuffer' <- newSTRef []
    timerCounter' <- newSTRef 0
    divCounter' <- newSTRef 0
+   haltBug' <- newSTRef False
+   numRomBanks' <- newSTRef numRomBanks
+   branchCycles' <- newSTRef 0
+   mCycleCounter' <- newSTRef 0
+   apuPower' <- newSTRef False
+   apuFrameSeqStep' <- newSTRef 0
+   apuFrameSeqCounter' <- newSTRef 0
+   ch1Active' <- newSTRef False
+   ch1LengthCounter' <- newSTRef 0
+   ch1EnvelopeTimer' <- newSTRef 0
+   ch1EnvelopeVolume' <- newSTRef 0
+   ch1SweepTimer' <- newSTRef 0
+   ch1SweepEnabled' <- newSTRef False
+   ch1SweepShadow' <- newSTRef 0
+   ch2Active' <- newSTRef False
+   ch2LengthCounter' <- newSTRef 0
+   ch2EnvelopeTimer' <- newSTRef 0
+   ch2EnvelopeVolume' <- newSTRef 0
+   ch3Active' <- newSTRef False
+   ch3LengthCounter' <- newSTRef 0
+   ch4Active' <- newSTRef False
+   ch4LengthCounter' <- newSTRef 0
+   ch4EnvelopeTimer' <- newSTRef 0
+   ch4EnvelopeVolume' <- newSTRef 0
    return Memory { memory = memory'
                  , bgPalettes = bgPalettes'
                  , registers = registers'
@@ -272,4 +397,28 @@ module Memory
                  , serialBuffer = serialBuffer'
                  , timerCounter = timerCounter'
                  , divCounter = divCounter'
+                 , haltBug = haltBug'
+                 , numRomBanks = numRomBanks'
+                 , branchCycles = branchCycles'
+                 , mCycleCounter = mCycleCounter'
+                 , apuPower = apuPower'
+                 , apuFrameSeqStep = apuFrameSeqStep'
+                 , apuFrameSeqCounter = apuFrameSeqCounter'
+                 , ch1Active = ch1Active'
+                 , ch1LengthCounter = ch1LengthCounter'
+                 , ch1EnvelopeTimer = ch1EnvelopeTimer'
+                 , ch1EnvelopeVolume = ch1EnvelopeVolume'
+                 , ch1SweepTimer = ch1SweepTimer'
+                 , ch1SweepEnabled = ch1SweepEnabled'
+                 , ch1SweepShadow = ch1SweepShadow'
+                 , ch2Active = ch2Active'
+                 , ch2LengthCounter = ch2LengthCounter'
+                 , ch2EnvelopeTimer = ch2EnvelopeTimer'
+                 , ch2EnvelopeVolume = ch2EnvelopeVolume'
+                 , ch3Active = ch3Active'
+                 , ch3LengthCounter = ch3LengthCounter'
+                 , ch4Active = ch4Active'
+                 , ch4LengthCounter = ch4LengthCounter'
+                 , ch4EnvelopeTimer = ch4EnvelopeTimer'
+                 , ch4EnvelopeVolume = ch4EnvelopeVolume'
                  }
