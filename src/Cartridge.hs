@@ -47,6 +47,14 @@ module Cartridge
      let cgbFlag = ws !! 0x143
      when (cgbFlag == 0x80 || cgbFlag == 0xC0) $
        writeRef gbc_mode True
+   -- Detect MBC type from header byte 0x0147 and set ROM bank mask
+   when (length ws > 0x147) $ do
+     let mbcByte = ws !! 0x147
+         mask = case mbcByte of
+                  b | b >= 0x0F && b <= 0x13 -> 0x7F  -- MBC3: 7-bit bank register
+                  b | b >= 0x19 && b <= 0x1E -> 0xFF  -- MBC5: 8-bit bank register
+                  _                          -> 0x1F  -- MBC1/ROM only: 5-bit
+     writeRef romBankMask mask
 
  loadBootRom :: [Word8] -> GBC ()
  loadBootRom bootRom = do

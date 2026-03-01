@@ -60,7 +60,7 @@ module GBC
      dev <- RawAudio.openAudioDevice nullPtr 0 desiredPtr obtainedPtr 0
      RawAudio.pauseAudioDevice dev 0  -- unpause
      return dev
-   mem <- stToIO $ Memory.new window' renderer' True numBanks
+   mem <- stToIO $ Memory.new window' renderer' False numBanks
    stToIO $ writeSTRef (audioDeviceID mem) devID
    runReaderT reader mem
 

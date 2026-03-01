@@ -37,6 +37,7 @@ module Memory
    cartFirstPage' <- newArray (0x0000, 0x00FF) 0
    traceEnabled' <- newSTRef False
    romBank' <- newSTRef 1
+   romBankMask' <- newSTRef 0x1F
    framebuffer' <- newArray (0, 160*144*3 - 1) 0
    screenshotDir' <- newSTRef Nothing
    testMode' <- newSTRef False
@@ -106,6 +107,7 @@ module Memory
                  , cartFirstPage = cartFirstPage'
                  , traceEnabled = traceEnabled'
                  , romBank = romBank'
+                 , romBankMask = romBankMask'
                  , framebuffer = framebuffer'
                  , screenshotDir = screenshotDir'
                  , testMode = testMode'
@@ -273,6 +275,7 @@ module Memory
    cartFirstPage' <- newArray (0x0000, 0x00FF) 0
    traceEnabled' <- newSTRef False
    romBank' <- newSTRef 1
+   romBankMask' <- newSTRef 0x1F
    framebuffer' <- newArray (0, 160*144*3 - 1) 0
    screenshotDir' <- newSTRef Nothing
    testMode' <- newSTRef True
@@ -342,6 +345,7 @@ module Memory
                  , cartFirstPage = cartFirstPage'
                  , traceEnabled = traceEnabled'
                  , romBank = romBank'
+                 , romBankMask = romBankMask'
                  , framebuffer = framebuffer'
                  , screenshotDir = screenshotDir'
                  , testMode = testMode'
@@ -413,6 +417,7 @@ module Memory
    cartFirstPage' <- newArray (0x0000, 0x00FF) 0
    traceEnabled' <- newSTRef False
    romBank' <- newSTRef 1
+   romBankMask' <- newSTRef 0x1F
    framebuffer' <- newArray (0, 160*144*3 - 1) 0
    screenshotDir' <- newSTRef Nothing
    testMode' <- newSTRef False
@@ -482,6 +487,7 @@ module Memory
                  , cartFirstPage = cartFirstPage'
                  , traceEnabled = traceEnabled'
                  , romBank = romBank'
+                 , romBankMask = romBankMask'
                  , framebuffer = framebuffer'
                  , screenshotDir = screenshotDir'
                  , testMode = testMode'

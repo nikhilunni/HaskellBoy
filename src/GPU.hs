@@ -163,16 +163,15 @@ module GPU
               let totalY = scy + line
 
               --Each line is 32 tiles, and we round down to the nearest tile to find the tile offset
-              let yTileOffset = (totalY `div` 8) * 32
-              let xTileOffset = scx `div` 8
+              let yTileRow = fromIntegral ((totalY `div` 8) .&. 31) :: Word16
+              let rowBase = bgStart + yTileRow * 32
+              let xTileStart = fromIntegral (scx `div` 8) :: Word16
+              let !scxI = fromIntegral (scx .&. 0x07) :: Int
 
               --Range is equal to the max number of tiles that can be shown on the screen at the same time
-              let tileAddrOffsetLower = bgStart + (fromIntegral yTileOffset) +
-                                        (fromIntegral xTileOffset) - 1
-              let tileAddrOffsetUpper = bgStart + (fromIntegral yTileOffset) +
-                                        (fromIntegral xTileOffset) + 20
-
-              forM_ [tileAddrOffsetLower .. tileAddrOffsetUpper] $ \tileIdx -> do
+              forM_ [0..20 :: Word16] $ \tileOff -> do
+                let xTile = (xTileStart + tileOff) .&. 31  -- Wrap X within 32-tile row
+                let tileIdx = rowBase + xTile
                 tileAttr <- if gbc then (readArr vramBank tileIdx) else (return 0)
                 tileNum <- (+ offset) <$> (readArr memory tileIdx)
 
@@ -184,9 +183,7 @@ module GPU
                 let !packed = if testBit tileAttr 5
                                 then packTileRowFlipped lowerByte upperByte
                                 else packTileRow lowerByte upperByte
-                let !tileOff = fromIntegral tileIdx - fromIntegral tileAddrOffsetLower :: Int
-                    !scxI = fromIntegral (scx .&. 0x07) :: Int
-                    !startX = (tileOff - 1) * 8 - scxI
+                let !startX = fromIntegral tileOff * 8 - scxI
                 pal <- (if gbc then (getGBCPalette $ tileAttr .&. 0x7) else (getGBPalette <$> readArr memory bgp_addr))
                 renderTileRow hl pal packed startX (fromIntegral line)
      else return ()

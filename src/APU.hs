@@ -243,29 +243,31 @@ module APU
  -- Generate one stereo audio sample and write to buffer
  generateSample :: GBC ()
  generateSample = do
-   -- Channel 1 amplitude
+   -- Channel 1: centered output (-8 to +7), 0 when inactive
    c1Active' <- readRef ch1Active
-   c1Amp <- if c1Active'
+   c1Out <- if c1Active'
      then do
        nr11 <- readArr memory 0xFF11
        let duty = (nr11 `shiftR` 6) .&. 0x03
        pos <- readRef ch1DutyPos
        vol <- readRef ch1EnvelopeVolume
-       return $ if dutyOutput duty pos then fromIntegral vol else 0 :: Int
+       let amp = if dutyOutput duty pos then fromIntegral vol else 0 :: Int
+       return (amp * 2 - 15)  -- center: 0→-15, 15→+15
      else return 0
-   -- Channel 2 amplitude
+   -- Channel 2: centered output
    c2Active' <- readRef ch2Active
-   c2Amp <- if c2Active'
+   c2Out <- if c2Active'
      then do
        nr21 <- readArr memory 0xFF16
        let duty = (nr21 `shiftR` 6) .&. 0x03
        pos <- readRef ch2DutyPos
        vol <- readRef ch2EnvelopeVolume
-       return $ if dutyOutput duty pos then fromIntegral vol else 0 :: Int
+       let amp = if dutyOutput duty pos then fromIntegral vol else 0 :: Int
+       return (amp * 2 - 15)
      else return 0
-   -- Channel 3 amplitude
+   -- Channel 3: centered output
    c3Active' <- readRef ch3Active
-   c3Amp <- if c3Active'
+   c3Out <- if c3Active'
      then do
        nr32 <- readArr memory 0xFF1C
        let volShift = case (nr32 `shiftR` 5) .&. 0x03 of
@@ -279,35 +281,37 @@ module APU
        let sample4 = if even pos
                        then (waveByte `shiftR` 4) .&. 0x0F
                        else waveByte .&. 0x0F
-       return (fromIntegral (sample4 `shiftR` volShift) :: Int)
+           amp = fromIntegral (sample4 `shiftR` volShift) :: Int
+       return (amp * 2 - 15)
      else return 0
-   -- Channel 4 amplitude
+   -- Channel 4: centered output
    c4Active' <- readRef ch4Active
-   c4Amp <- if c4Active'
+   c4Out <- if c4Active'
      then do
        lfsr <- readRef ch4LFSR
        vol <- readRef ch4EnvelopeVolume
        -- LFSR bit 0 inverted: 0 means output high
-       return $ if (lfsr .&. 1) == 0 then fromIntegral vol else 0 :: Int
+       let amp = if (lfsr .&. 1) == 0 then fromIntegral vol else 0 :: Int
+       return (amp * 2 - 15)
      else return 0
-   -- Mix per NR51 panning
+   -- Mix per NR51 panning (each channel range: -15 to +15)
    nr51 <- readArr memory 0xFF25
-   let mixR = (if testBit nr51 0 then c1Amp else 0)
-            + (if testBit nr51 1 then c2Amp else 0)
-            + (if testBit nr51 2 then c3Amp else 0)
-            + (if testBit nr51 3 then c4Amp else 0)
-       mixL = (if testBit nr51 4 then c1Amp else 0)
-            + (if testBit nr51 5 then c2Amp else 0)
-            + (if testBit nr51 6 then c3Amp else 0)
-            + (if testBit nr51 7 then c4Amp else 0)
+   let mixR = (if testBit nr51 0 then c1Out else 0)
+            + (if testBit nr51 1 then c2Out else 0)
+            + (if testBit nr51 2 then c3Out else 0)
+            + (if testBit nr51 3 then c4Out else 0)
+       mixL = (if testBit nr51 4 then c1Out else 0)
+            + (if testBit nr51 5 then c2Out else 0)
+            + (if testBit nr51 6 then c3Out else 0)
+            + (if testBit nr51 7 then c4Out else 0)
    -- Apply master volume from NR50
    nr50 <- readArr memory 0xFF24
    let volR = fromIntegral (nr50 .&. 0x07) + 1 :: Int
        volL = fromIntegral ((nr50 `shiftR` 4) .&. 0x07) + 1 :: Int
-   -- Scale to Int16: each channel 0-15, up to 4 channels = 0-60, ×8 = 0-480
-   -- Map to signed: (val - 240) * 136 gives range ~[-32640, +32640]
-       sampleL = fromIntegral $ (mixL * volL - 240) * 136 :: Int16
-       sampleR = fromIntegral $ (mixR * volR - 240) * 136 :: Int16
+   -- Scale to Int16: mixL/R range -60..+60, ×vol(1-8) = -480..+480
+   -- ×68 maps to approximately -32640..+32640 (fits Int16)
+       sampleL = fromIntegral (mixL * volL * 68) :: Int16
+       sampleR = fromIntegral (mixR * volR * 68) :: Int16
    -- Write to audio buffer
    bufPos <- readRef audioBufPos
    when (bufPos < 4094) $ do

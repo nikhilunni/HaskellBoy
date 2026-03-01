@@ -169,6 +169,12 @@ module MemoryRules
        writeArr memory i b) [0x0000..0x00FF]
      writeRef bootRomActive False
    writeArr memory 0xFF50 val
+ writeMemMapped 0xFF46 val = do -- OAM DMA: copy 160 bytes from (val << 8) to 0xFE00-0xFE9F
+   writeArr memory 0xFF46 val
+   let src = fromIntegral val `shiftL` 8 :: Word16
+   mapM_ (\i -> do
+     b <- readArr memory (src + i)
+     writeArr memory (0xFE00 + i) b) [0..159]
  writeMemMapped 0xFF04 _ = do -- DIV: any write resets to 0
    writeArr memory 0xFF04 0
    writeRef divCounter 0
@@ -226,9 +232,10 @@ module MemoryRules
    | addr >= 0xFF10 && addr <= 0xFF25 = do
        power <- readRef apuPower
        when power $ writeSoundReg addr val
-   -- MBC1: ROM bank select (0x2000-0x3FFF)
+   -- ROM bank select (0x2000-0x3FFF): mask depends on MBC type
    | addr >= 0x2000 && addr <= 0x3FFF = do
-       let bank = val .&. 0x1F
+       mask <- readRef romBankMask
+       let bank = val .&. mask
        let effective = if bank == 0 then 1 else bank
        nBanks <- readRef numRomBanks
        let clamped = if nBanks > 1

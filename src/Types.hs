@@ -58,6 +58,7 @@ module Types
                         , cartFirstPage :: STUArray s Word16 Word8 --Saved cartridge 0x00-0xFF
                         , traceEnabled :: STRef s Bool --Instruction tracing
                         , romBank :: STRef s Word8 --Current switchable ROM bank
+                        , romBankMask :: STRef s Word8 --Bank register mask (MBC-dependent)
                         , framebuffer :: STUArray s Int Word8
                         , screenshotDir :: STRef s (Maybe FilePath)
                         , testMode :: STRef s Bool --Flat 64K access for CPU tests
