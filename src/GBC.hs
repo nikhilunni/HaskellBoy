@@ -1,30 +1,40 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module GBC
  ( run, runRomHeadless )
  where
 
  import Control.Monad
- import Control.Monad.Reader
  import Control.Monad.ST
- import Data.STRef (writeSTRef)
+ import Data.IORef
 
  import Data.Word
- import Numeric (showHex)
-
- import System.IO (hPutStrLn, stderr)
 
  import Foreign (alloca, poke, nullFunPtr, nullPtr)
  import qualified SDL.Raw.Audio as RawAudio
  import qualified SDL.Raw.Types as RawTypes
 
+ import Effectful (Eff, (:>), runEff)
+ import Effectful.Dispatch.Static (evalStaticRep)
+
  import Types
  import Memory
- import Monad
  import Cartridge
- import MemoryRules (tickMCycle)
- import CPU
- import GPU
+ import CPU (handleInterrupts)
+ import GPU (screen_width, screen_height)
+ import Effects.Env (GBC, EmulatorEnv, StaticRep(EmulatorEnv))
+ import Effects.MemoryBus (MemoryBus, tickMCycle)
+ import Effects.CpuBackend (CpuBackend, cpuStep)
+ import Effects.Trace (runTraceSilent)
+ import Effects.Display (presentFrame)
+ import Effects.Input (pollInput)
+ import Effects.Handlers.SDL (runDisplaySDL, runAudioOutSDL, runInputSDL, SDLDisplay(..))
+ import Effects.Handlers.Headless (runDisplayHeadless, runAudioOutHeadless, runInputHeadless)
+ import Effects.Handlers.CpuBackend (runInterpreter, runTracingInterpreter)
+ import MemoryRules (runMemoryBusFull)
 
  import SDL hiding (E)
 
@@ -41,8 +51,8 @@ module GBC
                              (fromIntegral screen_height)
    }
 
- runGBC :: Word8 -> GBC a -> IO a
- runGBC numBanks (GBC reader) = do
+ runGBC :: Word8 -> Maybe FilePath -> GBC a -> IO a
+ runGBC numBanks ssDir action = do
    initializeAll
    window' <- createWindow "HaskellBoy" defaultWindowConfig
    renderer' <- createRenderer window' (-1) defaultRenderer
@@ -61,9 +71,23 @@ module GBC
      dev <- RawAudio.openAudioDevice nullPtr 0 desiredPtr obtainedPtr 0
      RawAudio.pauseAudioDevice dev 0  -- unpause
      return dev
-   mem <- stToIO $ Memory.new window' renderer' False numBanks
-   stToIO $ writeSTRef (audioDeviceID mem) devID
-   runReaderT reader mem
+   lastFrameRef <- newIORef =<< SDL.ticks
+   ssDirRef <- newIORef ssDir
+   mem <- stToIO $ Memory.new False numBanks
+   let sdlSt = SDLDisplay
+         { sdlWindow = window'
+         , sdlRenderer = renderer'
+         , sdlLastFrameRef = lastFrameRef
+         , sdlScreenshotDir = ssDirRef
+         }
+   runEff
+     . evalStaticRep (EmulatorEnv mem)
+     . runAudioOutSDL devID
+     . runDisplaySDL sdlSt
+     . runInputSDL ssDirRef
+     . runTraceSilent
+     . runMemoryBusFull
+     $ action
 
  postBootState :: GBC ()
  postBootState = do
@@ -111,51 +135,56 @@ module GBC
    writeArr memory 0xFF26 0xF1 -- NR52
    writeRef ch1Active True
 
- showHex16 :: Word16 -> String
- showHex16 w = let s = showHex w ""
-               in replicate (4 - length s) '0' ++ s
+ -- Backend-agnostic emulator loop (infinite)
+ emulatorLoop :: (CpuBackend :> es, MemoryBus :> es, EmulatorEnv :> es) => Eff es ()
+ emulatorLoop = forever $ do
+   pending <- readRef imePending
+   when pending $ writeRef ime True >> writeRef imePending False
+   halted <- readRef halt
+   if halted
+     then tickMCycle >> handleInterrupts
+     else cpuStep >> handleInterrupts
+
+ -- Backend-agnostic emulator loop (bounded by cycle count)
+ emulatorLoopBounded :: (CpuBackend :> es, MemoryBus :> es, EmulatorEnv :> es)
+                     => Word64 -> Eff es ()
+ emulatorLoopBounded maxCycles = go
+   where
+     go = do
+       pending <- readRef imePending
+       when pending $ writeRef ime True >> writeRef imePending False
+       halted <- readRef halt
+       if halted
+         then tickMCycle >> handleInterrupts
+         else cpuStep >> handleInterrupts
+       n <- readRef mCycleCounter
+       when (n < maxCycles) go
 
  run :: FilePath -> Bool -> Bool -> Maybe FilePath -> IO ()
  run romPath skipBoot trace ssDir = do
    cart <- readCartridge romPath
    let numBanks = romBankCount cart
-   runGBC numBanks $ do
+   runGBC numBanks ssDir $ do
      storeCartridge cart
-     when trace $ writeRef traceEnabled True
-     case ssDir of
-       Just d  -> writeRef screenshotDir (Just d)
-       Nothing -> return ()
      if skipBoot
        then postBootState
        else loadBootRom Memory.boot_rom
-     showScreen
-     pollSDLEvents
-     forever $ do
-       -- Apply pending IME from previous EI instruction
-       pending <- readRef imePending
-       when pending $ do
-         writeRef ime True
-         writeRef imePending False
-       halted <- readRef halt
-       if halted
-         then do
-           -- When halted, tick one M-cycle and check interrupts
-           tickMCycle
-           handleInterrupts
-         else do
-           tracing <- readRef traceEnabled
-           pcVal <- readRef pc
-           (next, _cycles) <- streamNextInstruction
-           when tracing $
-             liftIO $ hPutStrLn stderr $ "PC=" ++ showHex16 pcVal ++ " " ++ show next
-           executeInstruction next
-           -- Cycles are now charged per-M-cycle inside readMem/writeMem/tickMCycle
-           handleInterrupts
+     presentFrame
+     pollInput
+     let runner = if trace then runTracingInterpreter else runInterpreter
+     runner emulatorLoop
 
  runGBCHeadless :: Word8 -> GBC a -> IO a
- runGBCHeadless numBanks (GBC reader) = do
+ runGBCHeadless numBanks action = do
    mem <- Memory.newHeadless numBanks
-   runReaderT reader mem
+   runEff
+     . evalStaticRep (EmulatorEnv mem)
+     . runAudioOutHeadless
+     . runDisplayHeadless
+     . runInputHeadless
+     . runTraceSilent
+     . runMemoryBusFull
+     $ action
 
  runRomHeadless :: FilePath -> Word64 -> IO String
  runRomHeadless romPath maxCycles = do
@@ -164,24 +193,7 @@ module GBC
    runGBCHeadless numBanks $ do
      storeCartridge cart
      postBootState
-     let loop = do
-           pending <- readRef imePending
-           when pending $ do
-             writeRef ime True
-             writeRef imePending False
-           halted <- readRef halt
-           if halted
-             then do
-               -- When halted, tick one M-cycle and check interrupts
-               tickMCycle
-               handleInterrupts
-             else do
-               (next, _cycles) <- streamNextInstruction
-               executeInstruction next
-               handleInterrupts
-           n <- readRef mCycleCounter
-           when (n < maxCycles) loop
-     loop
+     runInterpreter $ emulatorLoopBounded maxCycles
      serial <- readRef serialBuffer
      if not (null serial)
        then return serial
@@ -196,4 +208,3 @@ module GBC
              let text = map (toEnum . fromIntegral) $ takeWhile (/= 0) textBytes
              return text
            else return serial
-

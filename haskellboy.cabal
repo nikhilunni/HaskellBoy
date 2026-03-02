@@ -19,14 +19,25 @@ library
     APU
     Cartridge
     GBC
+    Effects.Env
+    Effects.Display
+    Effects.AudioOut
+    Effects.Input
+    Effects.Trace
+    Effects.MemoryBus
+    Effects.CpuBackend
+    Effects.Handlers.SDL
+    Effects.Handlers.Headless
+    Effects.Handlers.CpuBackend
   build-depends:
-    base       >= 4.18 && < 5,
-    sdl2       >= 2.5,
-    bytestring >= 0.11,
-    array      >= 0.5,
-    mtl        >= 2.3,
-    cond       >= 0.5,
-    linear     >= 1.22
+    base            >= 4.18 && < 5,
+    sdl2            >= 2.5,
+    bytestring      >= 0.11,
+    array           >= 0.5,
+    mtl             >= 2.3,
+    cond            >= 0.5,
+    linear          >= 1.22,
+    effectful-core  >= 2.3
 
 executable haskellboy
   main-is:          Main.hs
@@ -53,7 +64,7 @@ test-suite cpu-tests
     directory,
     filepath,
     array,
-    mtl
+    effectful-core
 
 test-suite rom-tests
   type:             exitcode-stdio-1.0

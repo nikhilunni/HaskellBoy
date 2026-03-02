@@ -1,7 +1,10 @@
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
+
 module Memory
  where
 
- import Control.Monad.Reader
  import Control.Monad.ST
 
  import Data.Word
@@ -10,12 +13,14 @@ module Memory
  import Data.STRef
  import Data.Bits ((.&.), (.|.), setBit, shiftL, shiftR)
 
+ import Effectful (Eff, (:>))
+ import Effectful.Dispatch.Static (getStaticRep, unsafeEff_)
+
  import Types
+ import Effects.Env (EmulatorEnv, StaticRep(EmulatorEnv))
 
- import SDL (Window, Renderer)
-
- new :: Window -> Renderer -> Bool -> Word8 -> ST s (Memory s)
- new window' renderer' gbcMode numRomBanks = do
+ new :: Bool -> Word8 -> ST s (Memory s)
+ new gbcMode numRomBanks = do
    memory' <- newArray_ (0x0000, 0xFFFF)
    bgPalettes' <- newArray_ (0x0, 0x3F)
    registers' <- newArray (0x0, 0x7) 0
@@ -35,13 +40,9 @@ module Memory
    gbc_mode' <- newSTRef gbcMode
    bootRomActive' <- newSTRef False
    cartFirstPage' <- newArray (0x0000, 0x00FF) 0
-   traceEnabled' <- newSTRef False
    romBank' <- newSTRef 1
    romBankMask' <- newSTRef 0x1F
    framebuffer' <- newArray (0, 160*144*3 - 1) 0
-   screenshotDir' <- newSTRef Nothing
-   testMode' <- newSTRef False
-   headless' <- newSTRef False
    serialBuffer' <- newSTRef []
    timerCounter' <- newSTRef 0
    divCounter' <- newSTRef 0
@@ -71,7 +72,6 @@ module Memory
    ch4EnvelopeVolume' <- newSTRef 0
    joypadButtons' <- newSTRef 0xFF
    joypadDirPad' <- newSTRef 0xFF
-   lastFrameTicks' <- newSTRef 0
    ch1FreqTimer' <- newSTRef 0
    ch1DutyPos' <- newSTRef 0
    ch2FreqTimer' <- newSTRef 0
@@ -80,7 +80,6 @@ module Memory
    ch3WavePos' <- newSTRef 0
    ch4FreqTimer' <- newSTRef 0
    ch4LFSR' <- newSTRef 0x7FFF
-   audioDeviceID' <- newSTRef 0
    audioBuffer' <- newArray (0, 4095) 0
    audioBufPos' <- newSTRef 0
    audioSampleAccum' <- newSTRef 0
@@ -101,17 +100,11 @@ module Memory
                  , transferred = transferred'
                  , gpu_cycles = gpu_cycles'
                  , gbc_mode = gbc_mode'
-                 , window = window'
-                 , renderer = renderer'
                  , bootRomActive = bootRomActive'
                  , cartFirstPage = cartFirstPage'
-                 , traceEnabled = traceEnabled'
                  , romBank = romBank'
                  , romBankMask = romBankMask'
                  , framebuffer = framebuffer'
-                 , screenshotDir = screenshotDir'
-                 , testMode = testMode'
-                 , headless = headless'
                  , serialBuffer = serialBuffer'
                  , timerCounter = timerCounter'
                  , divCounter = divCounter'
@@ -141,7 +134,6 @@ module Memory
                  , ch4EnvelopeVolume = ch4EnvelopeVolume'
                  , joypadButtons = joypadButtons'
                  , joypadDirPad = joypadDirPad'
-                 , lastFrameTicks = lastFrameTicks'
                  , ch1FreqTimer = ch1FreqTimer'
                  , ch1DutyPos = ch1DutyPos'
                  , ch2FreqTimer = ch2FreqTimer'
@@ -150,80 +142,79 @@ module Memory
                  , ch3WavePos = ch3WavePos'
                  , ch4FreqTimer = ch4FreqTimer'
                  , ch4LFSR = ch4LFSR'
-                 , audioDeviceID = audioDeviceID'
                  , audioBuffer = audioBuffer'
                  , audioBufPos = audioBufPos'
                  , audioSampleAccum = audioSampleAccum'
                  }
 
  {-# INLINE readArr #-}
- readArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> GBC Word8
- readArr accessor i = GBC $ do
-   arr <- asks accessor
-   lift $ stToIO $ readArray arr i
+ readArr :: (EmulatorEnv :> es, Ix i) => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> Eff es Word8
+ readArr accessor i = do
+   EmulatorEnv mem <- getStaticRep
+   unsafeEff_ $ stToIO $ readArray (accessor mem) i
 
  {-# INLINE writeArr #-}
- writeArr :: Ix i => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> Word8 -> GBC ()
- writeArr accessor i val = GBC $ do
-   arr <- asks accessor
-   lift $ stToIO $ writeArray arr i val
+ writeArr :: (EmulatorEnv :> es, Ix i) => (Memory RealWorld -> STUArray RealWorld i Word8) -> i -> Word8 -> Eff es ()
+ writeArr accessor i val = do
+   EmulatorEnv mem <- getStaticRep
+   unsafeEff_ $ stToIO $ writeArray (accessor mem) i val
 
  {-# INLINE readArrI16 #-}
- readArrI16 :: Ix i => (Memory RealWorld -> STUArray RealWorld i Int16) -> i -> GBC Int16
- readArrI16 accessor i = GBC $ do
-   arr <- asks accessor
-   lift $ stToIO $ readArray arr i
+ readArrI16 :: (EmulatorEnv :> es, Ix i) => (Memory RealWorld -> STUArray RealWorld i Int16) -> i -> Eff es Int16
+ readArrI16 accessor i = do
+   EmulatorEnv mem <- getStaticRep
+   unsafeEff_ $ stToIO $ readArray (accessor mem) i
 
  {-# INLINE writeArrI16 #-}
- writeArrI16 :: Ix i => (Memory RealWorld -> STUArray RealWorld i Int16) -> i -> Int16 -> GBC ()
- writeArrI16 accessor i val = GBC $ do
-   arr <- asks accessor
-   lift $ stToIO $ writeArray arr i val
+ writeArrI16 :: (EmulatorEnv :> es, Ix i) => (Memory RealWorld -> STUArray RealWorld i Int16) -> i -> Int16 -> Eff es ()
+ writeArrI16 accessor i val = do
+   EmulatorEnv mem <- getStaticRep
+   unsafeEff_ $ stToIO $ writeArray (accessor mem) i val
 
  {-# INLINE readRef #-}
- readRef :: (Memory RealWorld -> STRef RealWorld e) -> GBC e
- readRef accessor = GBC $ do
-   ref <- asks accessor
-   lift $ stToIO $ readSTRef ref
+ readRef :: EmulatorEnv :> es => (Memory RealWorld -> STRef RealWorld e) -> Eff es e
+ readRef accessor = do
+   EmulatorEnv mem <- getStaticRep
+   unsafeEff_ $ stToIO $ readSTRef (accessor mem)
 
  {-# INLINE writeRef #-}
- writeRef :: (Memory RealWorld -> STRef RealWorld e) -> e -> GBC ()
- writeRef accessor val = GBC $ do
-   ref <- asks accessor
-   lift $ stToIO $ writeSTRef ref val
+ writeRef :: EmulatorEnv :> es => (Memory RealWorld -> STRef RealWorld e) -> e -> Eff es ()
+ writeRef accessor val = do
+   EmulatorEnv mem <- getStaticRep
+   unsafeEff_ $ stToIO $ writeSTRef (accessor mem) val
 
- readReg :: Register -> GBC Word8
+ readReg :: EmulatorEnv :> es => Register -> Eff es Word8
  readReg reg = readArr registers $ eNum reg
 
- writeReg :: Register -> Word8 -> GBC ()
+ writeReg :: EmulatorEnv :> es => Register -> Word8 -> Eff es ()
  writeReg F val = writeArr registers (eNum F) (val .&. 0xF0)
  writeReg reg val = writeArr registers (eNum reg) val
 
  --TODO : Is there a better way to constrain the pairings?
- readReg2 :: Register -> Register -> GBC Word16
+ readReg2 :: EmulatorEnv :> es => Register -> Register -> Eff es Word16
  readReg2 A F = readR A F
  readReg2 B C = readR B C
  readReg2 D E = readR D E
  readReg2 H L = readR H L
 
- readR :: Register -> Register -> GBC Word16
+ readR :: EmulatorEnv :> es => Register -> Register -> Eff es Word16
  readR reg1 reg2 = do
    a <- readArr registers (eNum reg1)
    b <- readArr registers (eNum reg2)
    return $ ((fromIntegral a) `shiftL` 8) .|. (fromIntegral b)
 
- writeReg2 :: Register -> Register -> Word16 -> GBC ()
+ writeReg2 :: EmulatorEnv :> es => Register -> Register -> Word16 -> Eff es ()
  writeReg2 A F = writeR A F
  writeReg2 B C = writeR B C
  writeReg2 D E = writeR D E
  writeReg2 H L = writeR H L
 
- writeR :: Register -> Register -> Word16 -> GBC ()
+ writeR :: EmulatorEnv :> es => Register -> Register -> Word16 -> Eff es ()
  writeR reg1 reg2 val = do
    writeReg reg1 (fromIntegral $ val `shiftR` 8)
    writeReg reg2 (fromIntegral $ val .&. 0xFF)
 
- requestInterrupt :: Interrupt -> GBC ()
+ requestInterrupt :: EmulatorEnv :> es => Interrupt -> Eff es ()
  requestInterrupt interrupt = do
    flagIF <- readArr memory 0xFF0F
    writeArr memory 0xFF0F (setBit flagIF (fromEnum interrupt))
@@ -273,13 +264,9 @@ module Memory
    gbc_mode' <- newSTRef False
    bootRomActive' <- newSTRef False
    cartFirstPage' <- newArray (0x0000, 0x00FF) 0
-   traceEnabled' <- newSTRef False
    romBank' <- newSTRef 1
    romBankMask' <- newSTRef 0x1F
    framebuffer' <- newArray (0, 160*144*3 - 1) 0
-   screenshotDir' <- newSTRef Nothing
-   testMode' <- newSTRef True
-   headless' <- newSTRef False
    serialBuffer' <- newSTRef []
    timerCounter' <- newSTRef 0
    divCounter' <- newSTRef 0
@@ -309,7 +296,6 @@ module Memory
    ch4EnvelopeVolume' <- newSTRef 0
    joypadButtons' <- newSTRef 0xFF
    joypadDirPad' <- newSTRef 0xFF
-   lastFrameTicks' <- newSTRef 0
    ch1FreqTimer' <- newSTRef 0
    ch1DutyPos' <- newSTRef 0
    ch2FreqTimer' <- newSTRef 0
@@ -318,8 +304,7 @@ module Memory
    ch3WavePos' <- newSTRef 0
    ch4FreqTimer' <- newSTRef 0
    ch4LFSR' <- newSTRef 0x7FFF
-   audioDeviceID' <- newSTRef 0
-   audioBuffer' <- newArray (0, 0) 0
+   audioBuffer' <- newArray (0, 4095) 0
    audioBufPos' <- newSTRef 0
    audioSampleAccum' <- newSTRef 0
    return Memory { memory = memory'
@@ -339,17 +324,11 @@ module Memory
                  , transferred = transferred'
                  , gpu_cycles = gpu_cycles'
                  , gbc_mode = gbc_mode'
-                 , window = error "newForTest: window not available"
-                 , renderer = error "newForTest: renderer not available"
                  , bootRomActive = bootRomActive'
                  , cartFirstPage = cartFirstPage'
-                 , traceEnabled = traceEnabled'
                  , romBank = romBank'
                  , romBankMask = romBankMask'
                  , framebuffer = framebuffer'
-                 , screenshotDir = screenshotDir'
-                 , testMode = testMode'
-                 , headless = headless'
                  , serialBuffer = serialBuffer'
                  , timerCounter = timerCounter'
                  , divCounter = divCounter'
@@ -379,7 +358,6 @@ module Memory
                  , ch4EnvelopeVolume = ch4EnvelopeVolume'
                  , joypadButtons = joypadButtons'
                  , joypadDirPad = joypadDirPad'
-                 , lastFrameTicks = lastFrameTicks'
                  , ch1FreqTimer = ch1FreqTimer'
                  , ch1DutyPos = ch1DutyPos'
                  , ch2FreqTimer = ch2FreqTimer'
@@ -388,7 +366,6 @@ module Memory
                  , ch3WavePos = ch3WavePos'
                  , ch4FreqTimer = ch4FreqTimer'
                  , ch4LFSR = ch4LFSR'
-                 , audioDeviceID = audioDeviceID'
                  , audioBuffer = audioBuffer'
                  , audioBufPos = audioBufPos'
                  , audioSampleAccum = audioSampleAccum'
@@ -415,13 +392,9 @@ module Memory
    gbc_mode' <- newSTRef False
    bootRomActive' <- newSTRef False
    cartFirstPage' <- newArray (0x0000, 0x00FF) 0
-   traceEnabled' <- newSTRef False
    romBank' <- newSTRef 1
    romBankMask' <- newSTRef 0x1F
    framebuffer' <- newArray (0, 160*144*3 - 1) 0
-   screenshotDir' <- newSTRef Nothing
-   testMode' <- newSTRef False
-   headless' <- newSTRef True
    serialBuffer' <- newSTRef []
    timerCounter' <- newSTRef 0
    divCounter' <- newSTRef 0
@@ -451,7 +424,6 @@ module Memory
    ch4EnvelopeVolume' <- newSTRef 0
    joypadButtons' <- newSTRef 0xFF
    joypadDirPad' <- newSTRef 0xFF
-   lastFrameTicks' <- newSTRef 0
    ch1FreqTimer' <- newSTRef 0
    ch1DutyPos' <- newSTRef 0
    ch2FreqTimer' <- newSTRef 0
@@ -460,8 +432,7 @@ module Memory
    ch3WavePos' <- newSTRef 0
    ch4FreqTimer' <- newSTRef 0
    ch4LFSR' <- newSTRef 0x7FFF
-   audioDeviceID' <- newSTRef 0
-   audioBuffer' <- newArray (0, 0) 0
+   audioBuffer' <- newArray (0, 4095) 0
    audioBufPos' <- newSTRef 0
    audioSampleAccum' <- newSTRef 0
    return Memory { memory = memory'
@@ -481,17 +452,11 @@ module Memory
                  , transferred = transferred'
                  , gpu_cycles = gpu_cycles'
                  , gbc_mode = gbc_mode'
-                 , window = error "newHeadless: window not available"
-                 , renderer = error "newHeadless: renderer not available"
                  , bootRomActive = bootRomActive'
                  , cartFirstPage = cartFirstPage'
-                 , traceEnabled = traceEnabled'
                  , romBank = romBank'
                  , romBankMask = romBankMask'
                  , framebuffer = framebuffer'
-                 , screenshotDir = screenshotDir'
-                 , testMode = testMode'
-                 , headless = headless'
                  , serialBuffer = serialBuffer'
                  , timerCounter = timerCounter'
                  , divCounter = divCounter'
@@ -521,7 +486,6 @@ module Memory
                  , ch4EnvelopeVolume = ch4EnvelopeVolume'
                  , joypadButtons = joypadButtons'
                  , joypadDirPad = joypadDirPad'
-                 , lastFrameTicks = lastFrameTicks'
                  , ch1FreqTimer = ch1FreqTimer'
                  , ch1DutyPos = ch1DutyPos'
                  , ch2FreqTimer = ch2FreqTimer'
@@ -530,7 +494,6 @@ module Memory
                  , ch3WavePos = ch3WavePos'
                  , ch4FreqTimer = ch4FreqTimer'
                  , ch4LFSR = ch4LFSR'
-                 , audioDeviceID = audioDeviceID'
                  , audioBuffer = audioBuffer'
                  , audioBufPos = audioBufPos'
                  , audioSampleAccum = audioSampleAccum'

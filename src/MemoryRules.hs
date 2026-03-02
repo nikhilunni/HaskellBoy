@@ -1,9 +1,15 @@
-module MemoryRules
-       ( readMem
-       , writeMem
-       , tickMCycle ) where
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 
- import Control.Monad (when, unless)
+module MemoryRules
+       ( runMemoryBusFull
+       , runMemoryBusTest ) where
+
+ import Control.Monad (when)
  import Control.Monad.IO.Class (liftIO)
 
  import Control.Monad.ST (RealWorld)
@@ -13,31 +19,44 @@ module MemoryRules
 
  import System.IO (hPutChar, hFlush, stderr)
 
+ import Effectful (Eff, (:>), IOE)
+ import Effectful.Dispatch.Dynamic (interpret)
+
  import Types
  import Memory
+ import Effects.Env (EmulatorEnv)
+ import Effects.MemoryBus (MemoryBus(..))
+ import Effects.Display (Display)
+ import Effects.AudioOut (AudioOut)
+ import Effects.Input (Input)
  import qualified GPU
  import qualified APU
 
- {-# INLINE tickMCycle #-}
- tickMCycle :: GBC ()
- tickMCycle = do
-   test <- readRef testMode
-   unless test $ do
-     GPU.tick 4
-     APU.tickAPU 4
-     cnt <- readRef mCycleCounter
-     writeRef mCycleCounter (cnt + 4)
+ -- Full handler: memory-mapped I/O + GPU/APU ticking
+ runMemoryBusFull :: (EmulatorEnv :> es, Display :> es, AudioOut :> es,
+                      Input :> es, IOE :> es)
+                  => Eff (MemoryBus : es) a -> Eff es a
+ runMemoryBusFull = interpret $ \_ -> \case
+   ReadMem addr      -> tickInternal >> readMemMapped addr
+   WriteMem addr val -> tickInternal >> writeMemMapped addr val
+   TickMCycle        -> tickInternal
 
- readMem :: Word16 -> GBC Word8
- readMem addr = do
-   test <- readRef testMode
-   if test
-     then readArr memory addr
-     else do
-       tickMCycle
-       readMemMapped addr
+ -- Test handler: flat 64K access, no ticking
+ runMemoryBusTest :: EmulatorEnv :> es => Eff (MemoryBus : es) a -> Eff es a
+ runMemoryBusTest = interpret $ \_ -> \case
+   ReadMem addr      -> readArr memory addr
+   WriteMem addr val -> writeArr memory addr val
+   TickMCycle        -> pure ()
 
- readMemMapped :: Word16 -> GBC Word8
+ {-# INLINE tickInternal #-}
+ tickInternal :: (EmulatorEnv :> es, Display :> es, AudioOut :> es,
+                  Input :> es, IOE :> es) => Eff es ()
+ tickInternal = do
+   GPU.tick 4
+   APU.tickAPU 4
+   cnt <- readRef mCycleCounter
+   writeRef mCycleCounter (cnt + 4)
+
  readMemMapped addr
    | addr >= 0x8000 && addr <= 0x9FFF = do  -- VRAM: blocked during Transfer (Mode 3)
        m <- readRef mode
@@ -70,7 +89,6 @@ module MemoryRules
    | otherwise                        = readArr memory addr
 
  -- Joypad register (0xFF00): select via bits 4-5, read buttons/dpad in bits 0-3
- readJoypad :: GBC Word8
  readJoypad = do
    sel <- readArr memory 0xFF00
    btns <- readRef joypadButtons
@@ -80,7 +98,6 @@ module MemoryRules
    return $ 0xC0 .|. (sel .&. 0x30) .|. input
 
  -- NR52: bit 7 = power, bits 3-0 = channel active, bits 6-4 always read as 1
- readNR52 :: GBC Word8
  readNR52 = do
    power <- readRef apuPower
    c1 <- readRef ch1Active
@@ -96,14 +113,12 @@ module MemoryRules
    return val
 
  -- PCM12 (0xFF76): bits 0-3 = ch1 volume, bits 4-7 = ch2 volume
- readPCM12 :: GBC Word8
  readPCM12 = do
    v1 <- readRef ch1EnvelopeVolume
    v2 <- readRef ch2EnvelopeVolume
    return $ (v2 `shiftL` 4) .|. (v1 .&. 0x0F)
 
  -- PCM34 (0xFF77): bits 0-3 = ch3 volume, bits 4-7 = ch4 volume
- readPCM34 :: GBC Word8
  readPCM34 = do
    -- Ch3 volume is determined by NR32 shift, not envelope
    nr32 <- readArr memory 0xFF1C
@@ -117,7 +132,6 @@ module MemoryRules
    return $ (v4 `shiftL` 4) .|. (v3 .&. 0x0F)
 
  -- Sound registers have unreadable bits that always read as 1
- readSoundReg :: Word16 -> GBC Word8
  readSoundReg addr
    | addr >= 0xFF27 = return 0xFF  -- Unused sound range
    | otherwise = do
@@ -150,16 +164,6 @@ module MemoryRules
  soundRegMask 0xFF26 = 0x70
  soundRegMask _      = 0xFF
 
- writeMem :: Word16 -> Word8 -> GBC ()
- writeMem addr val = do
-   test <- readRef testMode
-   if test
-     then writeArr memory addr val
-     else do
-       tickMCycle
-       writeMemMapped addr val
-
- writeMemMapped :: Word16 -> Word8 -> GBC ()
  writeMemMapped 0xFF50 val = do
    active <- readRef bootRomActive
    when (val /= 0 && active) $ do
@@ -264,7 +268,6 @@ module MemoryRules
    | addr >= 0xFEA0 && addr <= 0xFEFF = return ()
    | otherwise                        = writeArr memory addr val
 
- writeSoundReg :: Word16 -> Word8 -> GBC ()
  writeSoundReg addr val = do
    -- Read old value before overwriting (needed for length-enable edge detection)
    oldVal <- readArr memory addr
@@ -312,8 +315,9 @@ module MemoryRules
      _      -> return ()
 
  -- Extra length clock when length-enable transitions 0→1 without trigger
- extraLengthClockNonTrigger :: (Memory RealWorld -> STRef RealWorld Word16)
-                            -> (Memory RealWorld -> STRef RealWorld Bool) -> GBC ()
+ extraLengthClockNonTrigger :: (EmulatorEnv :> es)
+                            => (Memory RealWorld -> STRef RealWorld Word16)
+                            -> (Memory RealWorld -> STRef RealWorld Bool) -> Eff es ()
  extraLengthClockNonTrigger lenRef activeRef = do
    step <- readRef apuFrameSeqStep
    when (odd step) $ do

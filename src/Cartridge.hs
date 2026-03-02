@@ -11,7 +11,8 @@ module Cartridge
 
  import Types
  import Memory
- import MemoryRules
+ import Effects.MemoryBus (readMem, writeMem)
+ import Effects.Env (GBC)
 
  readCartridge :: FilePath -> IO [Word8]
  readCartridge fpath = C.unpack <$> C.readFile fpath

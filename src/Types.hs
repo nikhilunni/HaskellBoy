@@ -1,4 +1,3 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE BangPatterns #-}
 
 module Types
@@ -8,15 +7,6 @@ module Types
  import Data.Int (Int16)
  import Data.Array.ST
  import Data.STRef
-
- import Control.Monad.ST (RealWorld)
- import Control.Monad.Reader
-
- import SDL hiding (Palette)
-
-
- newtype GBC a = GBC (ReaderT (Memory RealWorld) IO a)
-               deriving (Functor, Applicative, Monad, MonadIO)
 
  data Register = A
                | F
@@ -41,8 +31,6 @@ module Types
                         , romBanks  :: STUArray s (Word8,Word16) Word8
                         , vramBank :: STUArray s Word16 Word8
                         , wramBanks :: STUArray s (Word8,Word16) Word8
-                        , window :: Window
-                        , renderer :: Renderer
                         , sp :: STRef s Word16
                         , pc :: STRef s Word16
                         , cycles :: STRef s Word16
@@ -56,13 +44,9 @@ module Types
                         , gbc_mode :: STRef s Bool --Are we in GBC mode?
                         , bootRomActive :: STRef s Bool --Is boot ROM overlaid?
                         , cartFirstPage :: STUArray s Word16 Word8 --Saved cartridge 0x00-0xFF
-                        , traceEnabled :: STRef s Bool --Instruction tracing
                         , romBank :: STRef s Word8 --Current switchable ROM bank
                         , romBankMask :: STRef s Word8 --Bank register mask (MBC-dependent)
                         , framebuffer :: STUArray s Int Word8
-                        , screenshotDir :: STRef s (Maybe FilePath)
-                        , testMode :: STRef s Bool --Flat 64K access for CPU tests
-                        , headless :: STRef s Bool --Skip SDL rendering
                         , serialBuffer :: STRef s String --Accumulated serial output
                         , timerCounter :: STRef s Word16 --Internal timer cycle counter
                         , divCounter :: STRef s Word16 --Internal DIV cycle counter
@@ -98,8 +82,6 @@ module Types
                         -- Joypad state
                         , joypadButtons :: STRef s Word8  -- A/B/Select/Start (active-low)
                         , joypadDirPad :: STRef s Word8   -- Up/Down/Left/Right (active-low)
-                        -- Frame limiting
-                        , lastFrameTicks :: STRef s Word32
                         -- Channel waveform state
                         , ch1FreqTimer :: STRef s Int
                         , ch1DutyPos :: STRef s Word8
@@ -110,7 +92,6 @@ module Types
                         , ch4FreqTimer :: STRef s Int
                         , ch4LFSR :: STRef s Word16
                         -- Audio output
-                        , audioDeviceID :: STRef s Word32
                         , audioBuffer :: STUArray s Int Int16
                         , audioBufPos :: STRef s Int
                         , audioSampleAccum :: STRef s Int
@@ -156,5 +137,5 @@ module Types
  thd3 :: (a, b, c) -> c
  thd3 (_,_,c) = c
 
- lift8 :: GBC Word8 -> GBC Word16
+ lift8 :: Functor f => f Word8 -> f Word16
  lift8 = fmap ((+0xFF00) . fromIntegral)

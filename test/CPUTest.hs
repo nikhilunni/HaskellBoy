@@ -1,9 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Main where
 
 import Control.Monad (forM_, when)
-import Control.Monad.Reader (runReaderT)
 import Control.Monad.ST (RealWorld)
 
 import Data.Aeson
@@ -25,9 +25,16 @@ import System.IO (hPutStrLn, stderr)
 import Test.Tasty
 import Test.Tasty.HUnit
 
+import Effectful (runEff)
+import Effectful.Dispatch.Static (evalStaticRep)
+
 import Types
 import Memory
 import CPU
+import Effects.Env (GBC, StaticRep(EmulatorEnv))
+import Effects.Trace (runTraceSilent)
+import Effects.Handlers.Headless (runDisplayHeadless, runAudioOutHeadless, runInputHeadless)
+import MemoryRules (runMemoryBusTest)
 
 -- | A single test vector from the sm83 test suite
 data TestCase = TestCase
@@ -90,7 +97,14 @@ parseRAMEntry = withArray "ram entry" $ \arr ->
 
 -- | Run a GBC action on an existing Memory
 runWith :: Memory RealWorld -> GBC a -> IO a
-runWith mem (GBC reader) = runReaderT reader mem
+runWith mem action = runEff
+  . evalStaticRep (EmulatorEnv mem)
+  . runAudioOutHeadless
+  . runDisplayHeadless
+  . runInputHeadless
+  . runTraceSilent
+  . runMemoryBusTest
+  $ action
 
 -- | Set up initial CPU state from a test case
 setupState :: CpuState -> GBC ()

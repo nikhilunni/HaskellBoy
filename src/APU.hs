@@ -1,3 +1,6 @@
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
+
 module APU
        ( tickAPU
        , triggerChannel1
@@ -20,7 +23,6 @@ module APU
  -- Steps 2,6: sweep (ch1)
  -- Step 7: envelopes (ch1,2,4)
  {-# INLINE tickAPU #-}
- tickAPU :: Cycles -> GBC ()
  tickAPU delta = do
    power <- readRef apuPower
    when power $ do
@@ -48,7 +50,6 @@ module APU
      tickChannelTimers d
      tickSampleAccum d
 
- tickLengthCounters :: GBC ()
  tickLengthCounters = do
    -- Channel 1
    nr14 <- readArr memory 0xFF14
@@ -83,7 +84,6 @@ module APU
        writeRef ch4LengthCounter len'
        when (len' == 0) $ writeRef ch4Active False
 
- tickEnvelopes :: GBC ()
  tickEnvelopes = do
    -- Channel 1
    tickEnvelope ch1Active ch1EnvelopeTimer ch1EnvelopeVolume 0xFF12
@@ -92,10 +92,6 @@ module APU
    -- Channel 4
    tickEnvelope ch4Active ch4EnvelopeTimer ch4EnvelopeVolume 0xFF21
 
- tickEnvelope :: (Memory RealWorld -> STRef RealWorld Bool)
-              -> (Memory RealWorld -> STRef RealWorld Word8)
-              -> (Memory RealWorld -> STRef RealWorld Word8)
-              -> Word16 -> GBC ()
  tickEnvelope activeRef timerRef volRef nrx2Addr = do
    active <- readRef activeRef
    when active $ do
@@ -114,7 +110,6 @@ module APU
              else when (vol > 0)  $ writeRef volRef (vol - 1)
          else writeRef timerRef timer'
 
- tickSweep :: GBC ()
  tickSweep = do
    active <- readRef ch1Active
    enabled <- readRef ch1SweepEnabled
@@ -152,7 +147,6 @@ module APU
        else writeRef ch1SweepTimer timer'
 
  -- Tick all channel frequency timers by d T-cycles
- tickChannelTimers :: Int -> GBC ()
  tickChannelTimers d = do
    -- Channel 1: period = (2048 - freq) * 4
    do nr13 <- readArr memory 0xFF13
@@ -228,20 +222,16 @@ module APU
  dutyOutput _ _   = False
 
  -- Accumulate sample timer and generate audio samples
- tickSampleAccum :: Int -> GBC ()
  tickSampleAccum d = do
-   devID <- readRef audioDeviceID
-   when (devID /= 0) $ do
-     accum <- readRef audioSampleAccum
-     let newAccum = accum + d * 44100
-     if newAccum >= 4194304
-       then do
-         writeRef audioSampleAccum (newAccum - 4194304)
-         generateSample
-       else writeRef audioSampleAccum newAccum
+   accum <- readRef audioSampleAccum
+   let newAccum = accum + d * 44100
+   if newAccum >= 4194304
+     then do
+       writeRef audioSampleAccum (newAccum - 4194304)
+       generateSample
+     else writeRef audioSampleAccum newAccum
 
  -- Generate one stereo audio sample and write to buffer
- generateSample :: GBC ()
  generateSample = do
    -- Channel 1: centered output (-8 to +7), 0 when inactive
    c1Active' <- readRef ch1Active
@@ -321,11 +311,6 @@ module APU
 
  -- Extra length clocking on trigger: if length enable is set and frame sequencer
  -- step is not a length-clock step (odd step), clock the length counter once.
- extraLengthClock :: (Memory RealWorld -> STRef RealWorld Word16)
-                  -> (Memory RealWorld -> STRef RealWorld Bool)
-                  -> Word16  -- max length
-                  -> Bool    -- is trigger also set?
-                  -> GBC ()
  extraLengthClock lenRef activeRef maxLen isTrigger = do
    step <- readRef apuFrameSeqStep
    -- Extra clock happens when the next step does NOT clock length
@@ -350,7 +335,6 @@ module APU
            then writeRef lenRef (maxLen - 1)
            else writeRef activeRef False
 
- triggerChannel1 :: GBC ()
  triggerChannel1 = do
    writeRef ch1Active True
    -- Reload length counter if zero
@@ -385,7 +369,6 @@ module APU
    -- DAC check: if top 5 bits of NR12 are 0, channel is off
    when (nr12 .&. 0xF8 == 0) $ writeRef ch1Active False
 
- triggerChannel2 :: GBC ()
  triggerChannel2 = do
    writeRef ch2Active True
    len <- readRef ch2LengthCounter
@@ -403,7 +386,6 @@ module APU
    writeRef ch2DutyPos 0
    when (nr22 .&. 0xF8 == 0) $ writeRef ch2Active False
 
- triggerChannel3 :: GBC ()
  triggerChannel3 = do
    writeRef ch3Active True
    len <- readRef ch3LengthCounter
@@ -420,7 +402,6 @@ module APU
    nr30 <- readArr memory 0xFF1A
    when (not $ testBit nr30 7) $ writeRef ch3Active False
 
- triggerChannel4 :: GBC ()
  triggerChannel4 = do
    writeRef ch4Active True
    len <- readRef ch4LengthCounter

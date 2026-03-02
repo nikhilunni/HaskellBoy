@@ -1,4 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
 
 module GPU
  where
@@ -8,12 +10,13 @@ module GPU
  import Data.Bits
 
  import Types
- import Monad
  import Memory
+ import Effects.Display (putPixel, presentFrame, clearFrame)
+ import Effects.AudioOut (flushAudio)
+ import Effects.Input (pollInput)
 
 
  {-# INLINE tickTimer #-}
- tickTimer :: Cycles -> GBC ()
  tickTimer delta = do
    -- DIV register: increments every 256 T-cycles
    divCnt <- readRef divCounter
@@ -51,7 +54,6 @@ module GPU
  screen_height = 144
 
  {-# INLINE compareLY_LYC #-}
- compareLY_LYC :: GBC ()
  compareLY_LYC = do
    ly <- readArr memory ly_addr
    lyc <- readArr memory lyc_addr
@@ -61,7 +63,6 @@ module GPU
 
 
  {-# INLINE lcdModeSwitch #-}
- lcdModeSwitch :: GPUMode -> GBC ()
  lcdModeSwitch m = do
    writeRef mode m
    stat <- readArr memory stat_addr
@@ -73,11 +74,9 @@ module GPU
      requestInterrupt STAT
 
  --HDMA is enabled if the 7th bit is set (hdma5 `shiftL` 7 == 1)
- hdmaEnabled :: GBC Bool
  hdmaEnabled = (>= 128) <$> (readArr memory hdma5_addr)
 
  --Imperative af :-(
- tick :: Cycles -> GBC ()
  tick delta = do
    tickTimer delta
    -- When LCD is disabled (LCDC bit 7 = 0), the GPU mode state machine
@@ -110,14 +109,9 @@ module GPU
              if (lineNum + 1 == 144)
                then do requestInterrupt VBlank
                        lcdModeSwitch VBlankMode
-                       showScreen
-                       pollSDLEvents
-                       queueAudioSamples
-                       limitFrameRate
-                       dir <- readRef screenshotDir
-                       case dir of
-                         Just d  -> captureScreenshot (d ++ "/screenshot.bmp")
-                         Nothing -> return ()
+                       presentFrame
+                       pollInput
+                       flushAudio
                else do lcdModeSwitch OAMSearch
 
          VBlankMode -> do
@@ -134,7 +128,7 @@ module GPU
                       when (total >= 456) $ do --Last line of VBlank is over
                         writeRef gpu_cycles $ total - 456
                         writeRef line 0
-                        clearScreen
+                        clearFrame
                         lcdModeSwitch OAMSearch
 
          OAMSearch -> when (total >= 80) $ (writeRef transferred False) >> lcdModeSwitch Transfer
@@ -149,23 +143,19 @@ module GPU
 
 
  {-# INLINE scanLine #-}
- scanLine :: Word8 -> GBC ()
  scanLine lineNum = do
    lcdc <- readArr memory lcdc_addr
-   when (testBit lcdc 7) $ do
-     hl <- readRef headless
-     renderLine hl lineNum
+   when (testBit lcdc 7) $
+     renderLine lineNum
 
  {-# INLINE renderLine #-}
- renderLine :: Bool -> Word8 -> GBC ()
- renderLine !hl !line = do
-   renderBackground hl line
-   renderWindow hl line
-   renderSprites hl line
+ renderLine !line = do
+   renderBackground line
+   renderWindow line
+   renderSprites line
 
 
- renderBackground :: Bool -> Word8 -> GBC ()
- renderBackground !hl !line = do
+ renderBackground !line = do
    lcdc <- readArr memory lcdc_addr
    gbc <- readRef gbc_mode
    if (testBit lcdc 0) --If BG display is enabled
@@ -199,7 +189,7 @@ module GPU
                                 else packTileRow lowerByte upperByte
                 let !startX = fromIntegral tileOff * 8 - scxI
                 pal <- (if gbc then (getGBCPalette $ tileAttr .&. 0x7) else (getGBPalette <$> readArr memory bgp_addr))
-                renderTileRow hl pal packed startX (fromIntegral line)
+                renderTileRow pal packed startX (fromIntegral line)
      else return ()
 
  -- Pack lo/hi tile bytes into a Word16: 2 bits per pixel, pixel 0 in bits 15:14
@@ -236,47 +226,43 @@ module GPU
  extractPixel !packed !i = fromIntegral $ (packed `shiftR` (14 - i * 2)) .&. 3
 
  {-# INLINE renderPixelDirect #-}
- renderPixelDirect :: Bool -> Palette -> Int -> Int -> Word8 -> GBC ()
- renderPixelDirect !hl !(c0,c1,c2,c3) !px !py !col = do
+ renderPixelDirect !(c0,c1,c2,c3) !px !py !col = do
    let !(Color a r g b) = case col of
          0 -> c0
          1 -> c1
          2 -> c2
          _ -> c3
-   writePixelDirect hl a r g b px py
+   putPixel px py a r g b
 
  {-# INLINE renderTileRow #-}
- renderTileRow :: Bool -> Palette -> Word16 -> Int -> Int -> GBC ()
- renderTileRow !hl !pal !packed !baseX !y = do
-   renderPixelDirect hl pal (baseX    ) y (extractPixel packed 0)
-   renderPixelDirect hl pal (baseX + 1) y (extractPixel packed 1)
-   renderPixelDirect hl pal (baseX + 2) y (extractPixel packed 2)
-   renderPixelDirect hl pal (baseX + 3) y (extractPixel packed 3)
-   renderPixelDirect hl pal (baseX + 4) y (extractPixel packed 4)
-   renderPixelDirect hl pal (baseX + 5) y (extractPixel packed 5)
-   renderPixelDirect hl pal (baseX + 6) y (extractPixel packed 6)
-   renderPixelDirect hl pal (baseX + 7) y (extractPixel packed 7)
+ renderTileRow !pal !packed !baseX !y = do
+   renderPixelDirect pal (baseX    ) y (extractPixel packed 0)
+   renderPixelDirect pal (baseX + 1) y (extractPixel packed 1)
+   renderPixelDirect pal (baseX + 2) y (extractPixel packed 2)
+   renderPixelDirect pal (baseX + 3) y (extractPixel packed 3)
+   renderPixelDirect pal (baseX + 4) y (extractPixel packed 4)
+   renderPixelDirect pal (baseX + 5) y (extractPixel packed 5)
+   renderPixelDirect pal (baseX + 6) y (extractPixel packed 6)
+   renderPixelDirect pal (baseX + 7) y (extractPixel packed 7)
 
  -- Render sprite tile row: skips transparent (Col0) pixels and out-of-bounds
  {-# INLINE renderSpriteTileRow #-}
- renderSpriteTileRow :: Bool -> Palette -> Word16 -> Int -> Int -> GBC ()
- renderSpriteTileRow !hl !pal !packed !baseX !y = do
-   renderSpritePixel hl pal packed baseX y 0
-   renderSpritePixel hl pal packed baseX y 1
-   renderSpritePixel hl pal packed baseX y 2
-   renderSpritePixel hl pal packed baseX y 3
-   renderSpritePixel hl pal packed baseX y 4
-   renderSpritePixel hl pal packed baseX y 5
-   renderSpritePixel hl pal packed baseX y 6
-   renderSpritePixel hl pal packed baseX y 7
+ renderSpriteTileRow !pal !packed !baseX !y = do
+   renderSpritePixel pal packed baseX y 0
+   renderSpritePixel pal packed baseX y 1
+   renderSpritePixel pal packed baseX y 2
+   renderSpritePixel pal packed baseX y 3
+   renderSpritePixel pal packed baseX y 4
+   renderSpritePixel pal packed baseX y 5
+   renderSpritePixel pal packed baseX y 6
+   renderSpritePixel pal packed baseX y 7
 
  {-# INLINE renderSpritePixel #-}
- renderSpritePixel :: Bool -> Palette -> Word16 -> Int -> Int -> Int -> GBC ()
- renderSpritePixel !hl !pal !packed !baseX !y !i = do
+ renderSpritePixel !pal !packed !baseX !y !i = do
    let !px = baseX + i
        !col = extractPixel packed i
    when (col /= 0 && px >= 0 && px < 160) $
-     renderPixelDirect hl pal px y col
+     renderPixelDirect pal px y col
 
  {-# INLINE toGBColor #-}
  toGBColor :: Word8 -> GBColor
@@ -313,7 +299,6 @@ module GPU
                     (8 * (fromIntegral $ (num `shiftR` 10) .&. 0x1F)) --B
 
  {-# INLINE getGBCPalette #-}
- getGBCPalette :: Word8 -> GBC Palette
  getGBCPalette !num = do
      let !base = 8 * num
      !b0 <- readArr bgPalettes base
@@ -354,8 +339,7 @@ module GPU
  hdma5_addr :: Word16
  hdma5_addr = 0xFF55
 
- renderWindow :: Bool -> Word8 -> GBC ()
- renderWindow !hl !line = do
+ renderWindow !line = do
    lcdc <- readArr memory lcdc_addr
    when (testBit lcdc 5) $ do  -- Window enable
      wy <- readArr memory 0xFF4A
@@ -382,10 +366,9 @@ module GPU
                          else packTileRow lo hi
          pal <- if gbc then getGBCPalette (tileAttr .&. 0x7) else getGBPalette <$> readArr memory bgp_addr
          let !baseX = wxAdj + fromIntegral tileX * 8
-         renderTileRow hl pal packed baseX (fromIntegral line)
+         renderTileRow pal packed baseX (fromIntegral line)
 
- renderSprites :: Bool -> Word8 -> GBC ()
- renderSprites !hl !line = do
+ renderSprites !line = do
    lcdc <- readArr memory lcdc_addr
    when (testBit lcdc 1) $ do  -- Sprite enable
      let !spriteHeight = if testBit lcdc 2 then 16 else 8 :: Int
@@ -421,4 +404,4 @@ module GPU
                        else packTileRow lo hi
        -- Use OBP0 or OBP1 based on bit 4
        pal <- getGBPalette <$> readArr memory (if testBit attrs 4 then 0xFF49 else 0xFF48)
-       renderSpriteTileRow hl pal packed spriteX (fromIntegral line)
+       renderSpriteTileRow pal packed spriteX (fromIntegral line)

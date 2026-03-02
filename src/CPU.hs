@@ -1,3 +1,8 @@
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
+
 module CPU where
 
  import Data.Word
@@ -5,15 +10,18 @@ module CPU where
  import Data.Bits ( (.&.) , (.|.), clearBit, setBit, bit, xor,
                     shiftL, shiftR, rotateR, rotateL, Bits, complement,
                     testBit, countTrailingZeros)
- import Data.Array (Array, listArray, (!))
+ import Data.Array (listArray, (!))
 
  import Control.Conditional hiding (when)
  import Control.Monad
 
+ import Effectful (Eff, (:>))
+
  import Types
  import Memory
- import MemoryRules (readMem, writeMem, tickMCycle)
- import Monad
+ import Effects.MemoryBus (MemoryBus, readMem, writeMem, tickMCycle)
+ import Monad (emulationError)
+ import Effects.Env (EmulatorEnv)
 
  data Instruction =
    {-See : http://marc.rawer.de/Gameboy/Docs/GBCPUman.pdf,
@@ -173,7 +181,6 @@ module CPU where
 
  data FlagCondition = CondNZ | CondZ | CondNC | CondC deriving Show
 
- testFlagCondition :: FlagCondition -> GBC Bool
  testFlagCondition CondNZ = do
    flagZ <- getFlagBit FlagZ
    return $ case flagZ of
@@ -220,7 +227,6 @@ module CPU where
    Zero -> num `clearBit` idx
    One  -> num `setBit`   idx
 
- updateFlag :: (IsBit b) => Flag -> b -> GBC ()
  updateFlag flag bit = do
    fReg <- readReg F
    case flag of
@@ -229,11 +235,9 @@ module CPU where
      FlagH -> writeReg F (set fReg 5 bit)
      FlagC -> writeReg F (set fReg 4 bit)
 
- updateFlags :: [(Flag,Bit)] -> GBC ()
  updateFlags [] = return ()
  updateFlags ((f,b):xs) = updateFlag f b >> updateFlags xs
 
- addA :: Word8 -> GBC ()
  addA val = do
    aVal <- readReg A
    let a16 = fromIntegral aVal :: Word16
@@ -246,7 +250,6 @@ module CPU where
                 (FlagH, toBit $ (a16 .&. 0xF) + (v16 .&. 0xF) > 0xF),
                 (FlagC, toBit $ result16 > 0xFF)]
 
- adcA :: Word8 -> GBC ()
  adcA val = do
    aVal <- readReg A
    carryBit <- getFlagBit FlagC
@@ -261,7 +264,6 @@ module CPU where
                 (FlagH, toBit $ (a16 .&. 0xF) + (v16 .&. 0xF) + c > 0xF),
                 (FlagC, toBit $ result16 > 0xFF)]
 
- subA :: Word8 -> GBC ()
  subA val = do
    aVal <- readReg A
    let result = aVal - val
@@ -271,7 +273,6 @@ module CPU where
                 (FlagH, toBit $ (aVal .&. 0xF) < (val .&. 0xF)),
                 (FlagC, toBit $ aVal < val)]
 
- sbcA :: Word8 -> GBC ()
  sbcA val = do
    aVal <- readReg A
    carryBit <- getFlagBit FlagC
@@ -286,7 +287,6 @@ module CPU where
                 (FlagH, toBit $ (a16 .&. 0xF) < (v16 .&. 0xF) + c),
                 (FlagC, toBit $ a16 < v16 + c)]
 
- andA :: Word8 -> GBC ()
  andA val = do
    aVal <- readReg A
    let result = aVal .&. val
@@ -296,7 +296,6 @@ module CPU where
                 (FlagH, One),
                 (FlagC, Zero)]
 
- orA :: Word8 -> GBC ()
  orA val = do
    aVal <- readReg A
    let result = aVal .|. val
@@ -306,7 +305,6 @@ module CPU where
                 (FlagH, Zero),
                 (FlagC, Zero)]
 
- xorA :: Word8 -> GBC ()
  xorA val = do
    aVal <- readReg A
    let result = aVal `xor` val
@@ -322,7 +320,6 @@ module CPU where
  isBitSet :: (Bits a, Num a) => a -> Int -> Bool
  isBitSet a = toBool <$> getBit a
 
- getFlagBit :: Flag -> GBC Bit
  getFlagBit flag = do
    fReg <- readReg F
    case flag of
@@ -331,14 +328,12 @@ module CPU where
      FlagH -> return $ getBit fReg 5
      FlagC -> return $ getBit fReg 4
 
- load8_imm :: GBC Word8
  load8_imm = do
    pcVal <- readRef pc
    val <- readMem pcVal
    writeRef pc (pcVal + 1)
    return val
 
- load16_imm :: GBC Word16
  load16_imm = do
    lower <- load8_imm
    upper <- load8_imm
@@ -350,16 +345,16 @@ module CPU where
 
  -- Interrupt type is defined in Types.hs
 
- loadIF :: GBC Word8
+ loadIF :: EmulatorEnv :> es => Eff es Word8
  loadIF = readArr memory 0xFF0F
 
- storeIF :: Word8 -> GBC ()
+ storeIF :: EmulatorEnv :> es => Word8 -> Eff es ()
  storeIF w = writeArr memory 0xFF0F w
 
- loadIE :: GBC Word8
+ loadIE :: EmulatorEnv :> es => Eff es Word8
  loadIE = readArr memory 0xFFFF
 
- storeIE :: Word8 -> GBC ()
+ storeIE :: EmulatorEnv :> es => Word8 -> Eff es ()
  storeIE w = writeArr memory 0xFFFF w
 
  interrupts       = [VBlank, STAT, Timer, Serial, Joypad]
@@ -375,7 +370,7 @@ module CPU where
  interruptVector Serial  = 0x0058
  interruptVector Joypad  = 0x0060
 
- processInterrupt :: Interrupt -> GBC ()
+ processInterrupt :: (EmulatorEnv :> es, MemoryBus :> es) => Interrupt -> Eff es ()
  processInterrupt interrupt = do
    writeRef ime False
    writeRef halt False
@@ -397,7 +392,7 @@ module CPU where
    -- Jump to interrupt vector
    writeRef pc (interruptVector interrupt)
 
- handleInterrupts :: GBC ()
+ handleInterrupts :: (EmulatorEnv :> es, MemoryBus :> es) => Eff es ()
  handleInterrupts = do
    flagIF <- loadIF
    flagIE <- loadIE
@@ -413,7 +408,6 @@ module CPU where
  -- requestInterrupt is now in Memory.hs
 ------------------
 
- streamNextInstruction :: GBC (Instruction, Cycles)
  streamNextInstruction = do
    pcVal <- readRef pc
    next <- readMem pcVal
@@ -434,7 +428,6 @@ module CPU where
 
  --TODO : Convert to immutable vector
  --See : http://imrannazar.com/Gameboy-Z80-Opcode-Map
- opcodeLookups :: [GBC Instruction]
  opcodeLookups = [return NOP,                             --0
                   LDrrnn B C <$> load16_imm,
                   return $ LDBCr A,
@@ -708,7 +701,6 @@ module CPU where
                   return $ RSTn R38
                  ]
 
- cbOpcodeLookups :: [GBC Instruction]
  cbOpcodeLookups = [return $ RLCr B,                --0
                     return $ RLCr C,
                     return $ RLCr D,
@@ -1037,19 +1029,14 @@ module CPU where
                  2,1,1,1,1,1,2,1,2,1,3,1,1,1,2,1,         --E
                  2,1,1,1,1,1,2,1,2,1,3,1,1,1,2,1]         --F
 
- opcodeTable :: Array Word8 (GBC Instruction)
  opcodeTable = listArray (0, 255) opcodeLookups
 
- cbOpcodeTable :: Array Word8 (GBC Instruction)
  cbOpcodeTable = listArray (0, 255) cbOpcodeLookups
 
- decodeInstruction :: Opcode -> GBC Instruction
  decodeInstruction op = opcodeTable ! op
 
- decodeCBInstruction :: Opcode -> GBC Instruction
  decodeCBInstruction op = cbOpcodeTable ! op
 
- executeInstruction :: Instruction -> GBC ()
  executeInstruction instr = case instr of
 --8-bit loads
    LDrn reg imm -> writeReg reg imm
