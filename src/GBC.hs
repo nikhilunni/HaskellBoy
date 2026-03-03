@@ -4,7 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 
 module GBC
- ( run, runRomHeadless )
+ ( run, runRomHeadless, runRomJitCompare )
  where
 
  import Control.Monad
@@ -13,17 +13,19 @@ module GBC
 
  import Data.Word
 
- import Foreign (alloca, poke, nullFunPtr, nullPtr)
+ import Foreign (alloca, poke, nullFunPtr, nullPtr, mallocBytes, fillBytes)
  import qualified SDL.Raw.Audio as RawAudio
+ import qualified SDL.Raw.Video as RawVideo
  import qualified SDL.Raw.Types as RawTypes
+ import SDL.Internal.Types (Renderer(..))
 
- import Effectful (Eff, (:>), runEff)
+ import Effectful (Eff, (:>), runEff, liftIO)
  import Effectful.Dispatch.Static (evalStaticRep)
 
  import Types
  import Memory
  import Cartridge
- import CPU (handleInterrupts)
+ import CPU (handleInterrupts, CachedInstr)
  import GPU (screen_width, screen_height)
  import Effects.Env (GBC, EmulatorEnv, StaticRep(EmulatorEnv))
  import Effects.MemoryBus (MemoryBus, tickMCycle)
@@ -33,8 +35,10 @@ module GBC
  import Effects.Input (pollInput)
  import Effects.Handlers.SDL (runDisplaySDL, runAudioOutSDL, runInputSDL, SDLDisplay(..))
  import Effects.Handlers.Headless (runDisplayHeadless, runAudioOutHeadless, runInputHeadless)
- import Effects.Handlers.CpuBackend (runInterpreter, runTracingInterpreter)
+ import Data.Array.IO (IOArray, IOUArray, newArray)
+ import Effects.Handlers.CpuBackend (runTracingInterpreter, runCachedInterpreter, runJitInterpreter)
  import MemoryRules (runMemoryBusFull)
+ import JIT.FFI (jitEngineNew)
 
  import SDL hiding (E)
 
@@ -74,9 +78,18 @@ module GBC
    lastFrameRef <- newIORef =<< SDL.ticks
    ssDirRef <- newIORef ssDir
    mem <- stToIO $ Memory.new False numBanks
+   -- Extract raw renderer pointer and create streaming texture
+   let Renderer rawR = renderer'
+   -- ABGR8888 = 0x16762004, SDL_TEXTUREACCESS_STREAMING = 1
+   tex <- RawVideo.createTexture rawR 0x16762004 1 160 144
+   pixBuf <- mallocBytes (160 * 144 * 4)
+   fillBytes pixBuf 0xFF (160 * 144 * 4)  -- init to white
    let sdlSt = SDLDisplay
          { sdlWindow = window'
          , sdlRenderer = renderer'
+         , sdlRawRenderer = rawR
+         , sdlTexture = tex
+         , sdlPixelBuf = pixBuf
          , sdlLastFrameRef = lastFrameRef
          , sdlScreenshotDir = ssDirRef
          }
@@ -160,10 +173,17 @@ module GBC
        n <- readRef mCycleCounter
        when (n < maxCycles) go
 
- run :: FilePath -> Bool -> Bool -> Maybe FilePath -> IO ()
- run romPath skipBoot trace ssDir = do
+ newInstrCache :: IO (IOArray Word16 (Maybe CachedInstr))
+ newInstrCache = newArray (0x0000, 0xFFFF) Nothing
+
+ newHotCounter :: IO (IOUArray Word16 Word16)
+ newHotCounter = newArray (0x0000, 0xFFFF) 0
+
+ run :: FilePath -> Bool -> Bool -> Bool -> Maybe FilePath -> IO ()
+ run romPath skipBoot trace jit ssDir = do
    cart <- readCartridge romPath
    let numBanks = romBankCount cart
+   cache <- newInstrCache
    runGBC numBanks ssDir $ do
      storeCartridge cart
      if skipBoot
@@ -171,8 +191,13 @@ module GBC
        else loadBootRom Memory.boot_rom
      presentFrame
      pollInput
-     let runner = if trace then runTracingInterpreter else runInterpreter
-     runner emulatorLoop
+     case (trace, jit) of
+       (True, _) -> runTracingInterpreter emulatorLoop
+       (_, True)  -> do
+         engine <- liftIO jitEngineNew
+         hotCounts <- liftIO newHotCounter
+         runJitInterpreter engine cache hotCounts emulatorLoop
+       _          -> runCachedInterpreter cache emulatorLoop
 
  runGBCHeadless :: Word8 -> GBC a -> IO a
  runGBCHeadless numBanks action = do
@@ -190,10 +215,11 @@ module GBC
  runRomHeadless romPath maxCycles = do
    cart <- readCartridge romPath
    let numBanks = romBankCount cart
+   cache <- newInstrCache
    runGBCHeadless numBanks $ do
      storeCartridge cart
      postBootState
-     runInterpreter $ emulatorLoopBounded maxCycles
+     runCachedInterpreter cache $ emulatorLoopBounded maxCycles
      serial <- readRef serialBuffer
      if not (null serial)
        then return serial
@@ -208,3 +234,66 @@ module GBC
              let text = map (toEnum . fromIntegral) $ takeWhile (/= 0) textBytes
              return text
            else return serial
+
+ -- | Diagnostic: run the same ROM with both cached interpreter and JIT,
+ -- compare memory snapshots after a fixed number of cycles.
+ runRomJitCompare :: FilePath -> Word64 -> IO ()
+ runRomJitCompare romPath maxCycles = do
+   cart <- readCartridge romPath
+   let numBanks = romBankCount cart
+
+   -- Run with cached interpreter
+   cache1 <- newInstrCache
+   interpMem <- runGBCHeadless numBanks $ do
+     storeCartridge cart
+     postBootState
+     runCachedInterpreter cache1 $ emulatorLoopBounded maxCycles
+     pc' <- readRef pc
+     sp' <- readRef sp
+     regs <- mapM (\i -> readArr registers i) [0..7]
+     mcyc <- readRef mCycleCounter
+     return (pc', sp', regs, mcyc)
+
+   -- Run with JIT interpreter
+   cache2 <- newInstrCache
+   hotCounts <- newHotCounter
+   engine <- jitEngineNew
+   jitMem <- runGBCHeadless numBanks $ do
+     storeCartridge cart
+     postBootState
+     runJitInterpreter engine cache2 hotCounts $ emulatorLoopBounded maxCycles
+     pc' <- readRef pc
+     sp' <- readRef sp
+     regs <- mapM (\i -> readArr registers i) [0..7]
+     mcyc <- readRef mCycleCounter
+     return (pc', sp', regs, mcyc)
+
+   -- Compare
+   let (iPC, iSP, iRegs, iMCyc) = interpMem
+       (jPC, jSP, jRegs, jMCyc) = jitMem
+
+   putStrLn $ "=== Comparison after " ++ show maxCycles ++ " cycles ==="
+   putStrLn $ "Interp: PC=" ++ showHex16 iPC ++ " SP=" ++ showHex16 iSP ++ " MCyc=" ++ show iMCyc
+   putStrLn $ "JIT:    PC=" ++ showHex16 jPC ++ " SP=" ++ showHex16 jSP ++ " MCyc=" ++ show jMCyc
+   putStrLn $ "Regs match: " ++ show (iRegs == jRegs)
+   when (iRegs /= jRegs) $ do
+     putStrLn $ "  Interp: " ++ show iRegs
+     putStrLn $ "  JIT:    " ++ show jRegs
+   putStrLn $ "PC match: " ++ show (iPC == jPC)
+   putStrLn $ "SP match: " ++ show (iSP == jSP)
+
+ showHex16 :: Word16 -> String
+ showHex16 w = "0x" ++ replicate (4 - length s) '0' ++ s
+   where s = showHexWord w
+
+ showHexWord :: Word16 -> String
+ showHexWord 0 = "0"
+ showHexWord n = let (q, r) = n `divMod` 16
+                     c = "0123456789ABCDEF" !! fromIntegral r
+                 in if q == 0 then [c] else showHexWord q ++ [c]
+
+ showRegs :: [Word8] -> String
+ showRegs rs = "[" ++ unwords (map (\r -> let s = show r in replicate (3 - length s) ' ' ++ s) rs) ++ "]"
+
+ pad :: Int -> String -> String
+ pad n s = replicate (n - length s) ' ' ++ s

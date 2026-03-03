@@ -36,6 +36,10 @@ module Cartridge
    -- Write bank 0 (0x0000-0x3FFF) and bank 1 (0x4000-0x7FFF) to main memory
    let firstTwoBanks = take 0x8000 ws
    mapM_ (\(c,i) -> writeArr memory (fromIntegral i) c) $ zip firstTwoBanks [0::Int ..]
+   -- Also write bank 1 to romBanks (for ROM bank sync when switching back to bank 1)
+   let bank1Data = take 0x4000 (drop 0x4000 ws)
+   mapM_ (\(c,i) -> writeArr romBanks (1, fromIntegral i + 0x4000) c)
+     $ zip bank1Data [0::Int ..]
    -- Write remaining banks (2+) to romBanks array
    let remaining = drop 0x8000 ws
    mapM_ (\(c,i) -> do

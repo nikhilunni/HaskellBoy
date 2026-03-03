@@ -29,6 +29,9 @@ library
     Effects.Handlers.SDL
     Effects.Handlers.Headless
     Effects.Handlers.CpuBackend
+    JIT.FFI
+    JIT.Pointers
+    JIT.Scheduler
   build-depends:
     base            >= 4.18 && < 5,
     sdl2            >= 2.5,

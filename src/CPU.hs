@@ -150,6 +150,32 @@ module CPU where
     | ERROR                           --Invalid instruction
     deriving Show
 
+ data CachedInstr = CachedInstr !Instruction !Word16  -- (decoded instruction, byte length)
+
+ -- | Byte length of an instruction given its opcode (1, 2, or 3)
+ instrByteLength :: Word8 -> Word16
+ instrByteLength op
+   | op == 0xCB = 2  -- CB prefix + suffix
+   | op `elem` [0x01,0x11,0x21,0x31,0x08,           -- LD rr,nn / LD (nn),SP
+                0xC3,0xC2,0xCA,0xD2,0xDA,           -- JP nn / JP cc,nn
+                0xCD,0xC4,0xCC,0xD4,0xDC,           -- CALL nn / CALL cc,nn
+                0xEA,0xFA] = 3                       -- LD (nn),A / LD A,(nn)
+   | op `elem` [0x06,0x0E,0x16,0x1E,0x26,0x2E,0x36,0x3E,  -- LD r,n / LD (HL),n
+                0x18,0x20,0x28,0x30,0x38,                   -- JR n / JR cc,n
+                0xC6,0xCE,0xD6,0xDE,0xE6,0xEE,0xF6,0xFE,   -- ALU n
+                0xE0,0xF0,0xE8,0xF8] = 2                    -- LDH / ADD SP,n / LD HL,SP+n
+   | otherwise = 1
+
+ -- | Does this opcode end a basic block?
+ isBlockTerminator :: Word8 -> Bool
+ isBlockTerminator op = op `elem`
+   [ 0xC3, 0xE9, 0x18                                        -- JP nn, JP HL, JR n
+   , 0xC2, 0xCA, 0xD2, 0xDA, 0x20, 0x28, 0x30, 0x38          -- JP/JR cc
+   , 0xCD, 0xC4, 0xCC, 0xD4, 0xDC                             -- CALL nn / CALL cc
+   , 0xC9, 0xD9, 0xC0, 0xC8, 0xD0, 0xD8                      -- RET / RETI / RET cc
+   , 0xC7, 0xCF, 0xD7, 0xDF, 0xE7, 0xEF, 0xF7, 0xFF          -- RST
+   , 0x76, 0x10 ]                                              -- HALT, STOP
+
 --Helper Functions
  data Flag = FlagZ | FlagN | FlagH | FlagC deriving Show
  data Bit = Zero | One deriving (Enum, Show)

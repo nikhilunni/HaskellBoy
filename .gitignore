@@ -115,3 +115,10 @@ dist-newstyle/
 .ghc.environment.*
 .hie/
 .stack-work/
+
+#####=== Rust ===#####
+jit/target/
+
+#####=== Misc ===#####
+*.log
+*.gb

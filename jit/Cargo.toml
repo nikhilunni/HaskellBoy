@@ -1,0 +1,21 @@
+[package]
+name = "haskellboy-jit"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+cranelift-codegen = "0.116"
+cranelift-frontend = "0.116"
+cranelift-jit = "0.116"
+cranelift-module = "0.116"
+cranelift-entity = "0.116"
+target-lexicon = "0.13"
+
+[dev-dependencies]
+libc = "0.2"
+
+[profile.release]
+panic = "abort"

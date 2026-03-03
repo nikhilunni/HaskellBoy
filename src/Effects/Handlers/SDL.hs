@@ -24,12 +24,14 @@ import Data.Array.ST (writeArray, getElems)
 import Data.IORef
 import qualified Data.ByteString as BS
 
-import Foreign.C.Types
 import Foreign.Marshal.Array (withArray)
-import Foreign.Ptr (Ptr, castPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign (pokeByteOff, fillBytes)
 
 import qualified SDL
 import qualified SDL.Raw.Audio as RawAudio
+import qualified SDL.Raw.Video as RawVideo
+import qualified SDL.Raw.Types as RawTypes
 
 import System.IO (hPutStrLn, stderr)
 
@@ -44,6 +46,9 @@ import Memory (readRef, writeRef, readArrI16, requestInterrupt)
 data SDLDisplay = SDLDisplay
   { sdlWindow       :: SDL.Window
   , sdlRenderer     :: SDL.Renderer
+  , sdlRawRenderer  :: RawTypes.Renderer  -- raw SDL_Renderer*
+  , sdlTexture      :: RawTypes.Texture   -- SDL_Texture* for screen
+  , sdlPixelBuf     :: Ptr Word8          -- 160*144*4 bytes (ABGR8888)
   , sdlLastFrameRef :: IORef Word32
   , sdlScreenshotDir :: IORef (Maybe FilePath)
   }
@@ -52,11 +57,16 @@ runDisplaySDL :: (EmulatorEnv :> es, IOE :> es)
               => SDLDisplay -> Eff (Display : es) a -> Eff es a
 runDisplaySDL st = interpret $ \_ -> \case
   PutPixel !x !y !a !r !g !b -> do
-    liftIO $ do
-      SDL.rendererDrawColor (sdlRenderer st) SDL.$= SDL.V4 r g b a
-      SDL.drawPoint (sdlRenderer st)
-        (SDL.P $ SDL.V2 (CInt $ fromIntegral x) (CInt $ fromIntegral y))
-    when (x >= 0 && x < 160 && y >= 0 && y < 144) $
+    when (x >= 0 && x < 160 && y >= 0 && y < 144) $ do
+      -- Write to pixel buffer for texture upload (ABGR8888: bytes R,G,B,A)
+      liftIO $ do
+        let !off = (y * 160 + x) * 4
+            !buf = sdlPixelBuf st
+        pokeByteOff buf off r
+        pokeByteOff buf (off + 1) g
+        pokeByteOff buf (off + 2) b
+        pokeByteOff buf (off + 3) a
+      -- Also write to framebuffer STUArray for screenshots
       withMemory $ \mem -> stToIO $ do
         let !idx = (y * 160 + x) * 3
         writeArray (framebuffer mem) idx b
@@ -64,7 +74,13 @@ runDisplaySDL st = interpret $ \_ -> \case
         writeArray (framebuffer mem) (idx + 2) r
 
   PresentFrame -> do
-    liftIO $ SDL.present (sdlRenderer st)
+    liftIO $ do
+      -- Upload pixel buffer to texture in one call
+      _ <- RawVideo.updateTexture (sdlTexture st) nullPtr
+             (castPtr $ sdlPixelBuf st) (160 * 4)
+      -- Render texture to screen
+      _ <- RawVideo.renderCopy (sdlRawRenderer st) (sdlTexture st) nullPtr nullPtr
+      SDL.present (sdlRenderer st)
     -- Frame rate limiting
     now <- liftIO SDL.ticks
     lastT <- liftIO $ readIORef (sdlLastFrameRef st)
@@ -73,8 +89,8 @@ runDisplaySDL st = interpret $ \_ -> \case
     liftIO $ SDL.ticks >>= writeIORef (sdlLastFrameRef st)
 
   ClearFrame -> liftIO $ do
-    SDL.rendererDrawColor (sdlRenderer st) SDL.$= SDL.V4 255 255 255 255
-    SDL.clear (sdlRenderer st)
+    -- Fill pixel buffer with white (0xFF for all RGBA bytes)
+    fillBytes (sdlPixelBuf st) 0xFF (160 * 144 * 4)
 
   CaptureFrame path -> do
     pixels <- withMemory $ \mem -> stToIO $ getElems (framebuffer mem)
@@ -116,9 +132,12 @@ runAudioOutSDL devID = interpret $ \_ -> \case
     bufPos <- readRef audioBufPos
     when (bufPos > 0) $ do
       when (devID /= 0) $ do
-        samples <- mapM (readArrI16 audioBuffer) [0..bufPos-1]
-        liftIO $ withArray samples $ \ptr ->
-          void $ RawAudio.queueAudio devID (castPtr ptr :: Ptr ()) (fromIntegral $ bufPos * 2)
+        -- Backpressure: only queue if < ~100ms buffered (44100*2ch*2bytes*0.1s ≈ 17640)
+        queued <- liftIO $ RawAudio.getQueuedAudioSize devID
+        when (queued < 17640) $ do
+          samples <- mapM (readArrI16 audioBuffer) [0..bufPos-1]
+          liftIO $ withArray samples $ \ptr ->
+            void $ RawAudio.queueAudio devID (castPtr ptr :: Ptr ()) (fromIntegral $ bufPos * 2)
       writeRef audioBufPos 0
 
 runInputSDL :: (EmulatorEnv :> es, Display :> es, IOE :> es)
@@ -137,11 +156,6 @@ runInputSDL ssDirRef = interpret $ \_ -> \case
                    Nothing -> "screenshot.bmp"
       Effects.Display.captureFrame path
       liftIO $ hPutStrLn stderr $ "Screenshot saved to " ++ path
-    -- Continuous screenshot if dir is set
-    dir <- liftIO $ readIORef ssDirRef
-    case dir of
-      Just d  -> Effects.Display.captureFrame (d ++ "/screenshot.bmp")
-      Nothing -> pure ()
     -- Process joypad input
     forM_ events $ \event -> case SDL.eventPayload event of
       SDL.KeyboardEvent kd -> do

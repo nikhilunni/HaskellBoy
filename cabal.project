@@ -1,1 +1,6 @@
 packages: .
+
+package haskellboy
+  extra-lib-dirs: /Users/nikhilunni/Projects/HaskellBoy/jit/target/release
+  extra-libraries: haskellboy_jit
+  ghc-options: -optl-force_load -optl/Users/nikhilunni/Projects/HaskellBoy/jit/target/release/libhaskellboy_jit.a -optl-framework -optlSecurity -optl-framework -optlCoreFoundation -optl-framework -optlSystemConfiguration
